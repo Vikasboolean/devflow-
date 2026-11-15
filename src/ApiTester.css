@@ -1,0 +1,315 @@
+
+.api-container {
+  height: 100%;
+  overflow-y: auto;
+  padding: 28px;
+  background: #101114;
+  color: #f5f5f5;
+}
+
+.api-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 25px;
+}
+
+.api-heading h1 {
+  font-size: 26px;
+  margin-bottom: 7px;
+}
+
+.api-heading p {
+  color: #999;
+}
+
+.api-version {
+  font-size: 11px;
+  letter-spacing: 1px;
+  color: #54a6ff;
+  background: #1b2c40;
+  padding: 9px 13px;
+  border-radius: 6px;
+}
+
+.request-box {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 25px;
+}
+
+.request-box select,
+.request-box input {
+  background: #20232b;
+  color: white;
+  border: 1px solid #383d49;
+  border-radius: 7px;
+  padding: 13px;
+  outline: none;
+}
+
+.request-box select {
+  width: 110px;
+}
+
+.request-box input {
+  flex: 1;
+  min-width: 0;
+}
+
+.request-box button {
+  background: #2879dc;
+  min-width: 90px;
+}
+
+.request-box button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.api-editor {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+
+.editor-section h3,
+.response-section h3 {
+  margin-bottom: 12px;
+}
+
+.editor-section textarea {
+  width: 100%;
+  height: 180px;
+  resize: vertical;
+  background: #191c23;
+  color: #a9d5ff;
+  border: 1px solid #343945;
+  border-radius: 8px;
+  padding: 15px;
+  font-family: Consolas, monospace;
+  font-size: 13px;
+  outline: none;
+}
+
+.editor-section textarea:focus,
+.request-box input:focus {
+  border-color: #54a6ff;
+}
+
+.editor-section textarea:disabled {
+  opacity: 0.4;
+}
+
+.response-section {
+  margin-top: 30px;
+}
+
+.response-meta {
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+  background: #1b2028;
+  border: 1px solid #303640;
+  border-radius: 8px;
+  padding: 14px;
+  margin: 15px 0;
+  color: #75d99a;
+  font-size: 13px;
+}
+
+.response-headers,
+.response-body {
+  margin-top: 20px;
+}
+
+.response-section pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: #191c23;
+  border: 1px solid #343945;
+  border-radius: 8px;
+  padding: 18px;
+  color: #b5d7ff;
+  font-family: Consolas, monospace;
+  font-size: 13px;
+  overflow-x: auto;
+}
+
+.api-error {
+  margin-top: 15px;
+  padding: 15px;
+  background: #3a1e24;
+  color: #ff9ca6;
+  border-radius: 8px;
+}
+
+
+.collections-area {
+  margin: 20px 0;
+  padding: 18px;
+  background: #191c23;
+  border: 1px solid #343945;
+  border-radius: 10px;
+}
+
+.collections-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 15px;
+}
+
+.collections-header h3 {
+  font-size: 16px;
+}
+
+.collections-header button,
+.save-request-area button {
+  background: #2879dc;
+}
+
+.collection-item,
+.saved-request {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px;
+  margin-top: 7px;
+  background: #252932;
+  border-radius: 7px;
+  color: #ddd;
+}
+
+.collection-item span,
+.saved-request span {
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.saved-requests {
+  margin-top: 20px;
+}
+
+.saved-requests h4 {
+  margin-bottom: 10px;
+}
+
+.saved-request strong {
+  color: #65b5ff;
+  margin-right: 8px;
+}
+
+.save-request-area {
+  display: flex;
+  gap: 10px;
+  margin: 15px 0;
+}
+
+.save-request-area input {
+  flex: 1;
+  min-width: 0;
+  padding: 11px;
+  border: 1px solid #383d49;
+  border-radius: 7px;
+  background: #20232b;
+  color: white;
+  outline: none;
+}
+
+
+/* API Editor Tabs */
+
+.api-editor-tabs {
+  display: flex;
+  gap: 10px;
+  margin: 20px 0 15px;
+  border-bottom: 1px solid #343945;
+}
+
+.api-editor-tabs button {
+  background: transparent;
+  color: #999;
+  border-radius: 0;
+  padding: 12px 18px;
+}
+
+.api-editor-tabs button.active {
+  color: #54a6ff;
+  border-bottom: 2px solid #54a6ff;
+}
+
+/* Authentication Section */
+
+.auth-section {
+  min-height: 240px;
+  padding: 22px;
+  background: #191c23;
+  border: 1px solid #343945;
+  border-radius: 9px;
+}
+
+.auth-section h3 {
+  margin-bottom: 22px;
+}
+
+.auth-type-row {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  margin-bottom: 25px;
+}
+
+.auth-type-row label,
+.auth-fields label {
+  color: #c5c8d0;
+  font-size: 13px;
+}
+
+.auth-type-row select,
+.auth-fields input,
+.auth-fields select {
+  background: #252932;
+  color: white;
+  border: 1px solid #383d49;
+  border-radius: 7px;
+  padding: 12px;
+  outline: none;
+}
+
+.auth-type-row select {
+  min-width: 220px;
+}
+
+.auth-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 550px;
+}
+
+.auth-fields input,
+.auth-fields select {
+  width: 100%;
+}
+
+.auth-fields input:focus,
+.auth-fields select:focus,
+.auth-type-row select:focus {
+  border-color: #54a6ff;
+}
+
+.auth-description {
+  color: #9299a6;
+  font-size: 13px;
+  margin-top: 12px;
+  line-height: 1.6;
+}
+
+.collection-item.selected {
+  background: #26384d;
+  border: 1px solid #3979b9;
+}
