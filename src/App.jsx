@@ -5,16 +5,37 @@ import "./App.css";
 import DeveloperConsole from "./DeveloperConsole";
 import NetworkMonitor from "./NetworkMonitor";
 import DownloadManager from "./DownloadManager";
+import BrowserSettings from "./BrowserSettings";
 
 function App() {
   const [url, setUrl] = useState("");
   const [tabs, setTabs] = useState([]);
   const [activeTabId, setActiveTabId] = useState(null);
+  const activeTab = tabs.find((tab) => tab.id === activeTabId);
+  const activeError = activeTab?.loadError;
   const viewportRef = useRef(null);
   const [bookmarks, setBookmarks] = useState([]);
   const [history, setHistory] = useState([]);
   const [panel, setPanel] = useState("");
   const [consoleMessages, setConsoleMessages] = useState([]);
+  const [searchEngine, setSearchEngine] = useState("google");
+  const [theme, setTheme] = useState("dark");
+
+  useEffect(() => {
+    window.browserAPI.getSettings()
+      .then((settings) => {
+        setSearchEngine(settings?.searchEngine || "google");
+        setTheme(settings?.theme || "dark");
+      })
+      .catch((error) => console.error("Could not load settings:", error));
+  }, []);
+
+  const searchEngines = {
+    google: { name: "Google", domain: "google.com" },
+    bing: { name: "Bing", domain: "bing.com" },
+    duckduckgo: { name: "DuckDuckGo", domain: "duckduckgo.com" }
+  };
+  const selectedSearchEngine = searchEngines[searchEngine] || searchEngines.google;
 
   useEffect(() => {
     const unsubscribe = window.browserAPI.onTabsUpdated((data) => {
@@ -61,7 +82,10 @@ function App() {
       return;
     }
 
-    window.browserAPI.setViewVisible(true);
+    const active = tabs.find((tab) => tab.id === activeTabId);
+    const showBrowserView = panel === "" && !active?.loadError;
+
+    window.browserAPI.setViewVisible(showBrowserView);
 
     const updateBounds = () => {
       const rect = viewport.getBoundingClientRect();
@@ -87,9 +111,10 @@ function App() {
       removeResizeListener();
       window.browserAPI.setViewVisible(false);
     };
-  }, [panel]);
+  }, [panel, activeTabId, tabs]);
 
-  const navigate = () => {
+
+  const navigate = async () => {
     let target = url.trim();
     if (!target) return;
 
@@ -97,7 +122,24 @@ function App() {
       if (target.includes(".") || target.includes("localhost")) {
         target = `https://${target}`;
       } else {
-        target = `https://www.google.com/search?q=${encodeURIComponent(target)}`;
+        try {
+          const settings = await window.browserAPI.getSettings();
+          const searchEngine = settings?.searchEngine || "google";
+
+          const searchUrls = {
+            google: "https://www.google.com/search?q=",
+            bing: "https://www.bing.com/search?q=",
+            duckduckgo: "https://duckduckgo.com/?q="
+          };
+
+          const searchBase =
+            searchUrls[searchEngine] || searchUrls.google;
+
+          target = `${searchBase}${encodeURIComponent(target)}`;
+        } catch (error) {
+          console.error("Could not load search settings:", error);
+          target = `https://www.google.com/search?q=${encodeURIComponent(target)}`;
+        }
       }
     }
 
@@ -113,8 +155,13 @@ function App() {
     }
   };
 
+
   const addTab = () => {
     window.browserAPI.createTab("https://www.google.com");
+  };
+
+  const addPrivateTab = () => {
+    window.browserAPI.createPrivateTab("https://www.google.com");
   };
 
   const selectTab = (id) => {
@@ -157,7 +204,7 @@ function App() {
   };
 
   return (
-    <div className="browser">
+    <div className={`browser theme-${theme}`}>
       <header className="topbar">
         <div className="brand">
           DEV<span>FLOW</span>
@@ -169,13 +216,22 @@ function App() {
           <button onClick={() => window.browserAPI.reload()}>↻</button>
         </div>
 
-        <input
-          className="address"
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && navigate()}
-          placeholder="Search or enter website URL"
-        />
+        <div className="address-container">
+          <img
+            className="search-engine-icon"
+            src={`https://www.google.com/s2/favicons?domain=${selectedSearchEngine.domain}&sz=32`}
+            alt={`${selectedSearchEngine.name} icon`}
+            title={`Search with ${selectedSearchEngine.name}`}
+          />
+          <input
+            className="address"
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            onFocus={(e) => e.target.select()}
+            onKeyDown={(e) => e.key === "Enter" && navigate()}
+            placeholder="Search or enter website URL"
+          />
+        </div>
 
         <button className="go" onClick={navigate}>Go</button>
       </header>
@@ -184,11 +240,12 @@ function App() {
         {tabs.map((tab) => (
           <div
             key={tab.id}
-            className={`tab ${activeTabId === tab.id ? "active" : ""}`}
+            className={`tab ${activeTabId === tab.id ? "active" : ""} ${tab.isPrivate ? "private-tab" : ""}`}
             onClick={() => selectTab(tab.id)}
             title={tab.title}
           >
             <span className="tab-title">
+              {tab.isPrivate ? "◉ " : ""}
               {tab.loading ? "◌ " : ""}
               {tab.title || "New Tab"}
             </span>
@@ -207,6 +264,14 @@ function App() {
           +
         </button>
 
+        <button
+          className="private-tab-btn"
+          onClick={addPrivateTab}
+          title="New Private Tab"
+        >
+          ◉ Private
+        </button>
+
         <button className="bookmark-btn" onClick={saveBookmark}>
           ☆
         </button>
@@ -215,6 +280,32 @@ function App() {
       </div>
 
       <main className="workspace">
+
+        <aside className="navigation-rail">
+          <div className="rail-brand">D</div>
+
+          <div className="rail-menu">
+            <button title="Home" onClick={() => setPanel("")}>⌂</button>
+            <button title="Bookmarks" onClick={() => {
+              setPanel("bookmarks");
+              loadBookmarks();
+            }}>☆</button>
+            <button title="History" onClick={() => {
+              setPanel("history");
+              loadHistory();
+            }}>◷</button>
+            <button title="API Testing" onClick={() => setPanel("api")}>⌘</button>
+            <button title="Developer Tools" onClick={() => setPanel("developer")}>⌘</button>
+            <button title="Network Monitor" onClick={() => setPanel("network")}>⇄</button>
+            <button title="Downloads" onClick={() => setPanel("downloads")}>↓</button>
+          </div>
+
+          <div className="rail-bottom">
+            <button title="Settings" onClick={() => setPanel("settings")}>⚙</button>
+          </div>
+        </aside>
+
+
         <aside className="sidebar">
           <button onClick={() => setPanel("")}>⌂ Home</button>
 
@@ -250,12 +341,47 @@ function App() {
             ↓ Download Manager
           </button>
 
-          <button>⚙ Settings</button>
+          <button onClick={() => setPanel("settings")}>
+            ⚙ Settings
+          </button>
         </aside>
 
         <section className="content">
           {panel === "" && (
-            <div className="browser-viewport" ref={viewportRef} />
+            activeError ? (
+              <div className="browser-error-page">
+                <div className="error-content">
+                  <div className="error-icon">⚠</div>
+
+                  <h1>Unable to Connect</h1>
+
+                  <p className="error-description">
+                    {activeError.description || "This website couldn't be reached."}
+                  </p>
+
+                  <p className="error-url">{activeError.url || activeTab?.url}</p>
+
+                  <p className="error-code">
+                    Error Code: {activeError.code}
+                  </p>
+
+                  <div className="error-actions">
+                    <button onClick={() => window.browserAPI.back()}>
+                      Go Back
+                    </button>
+
+                    <button
+                      className="retry-error-btn"
+                      onClick={() => window.browserAPI.retryPage()}
+                    >
+                      ↻ Try Again
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="browser-viewport" ref={viewportRef} />
+            )
           )}
 
           {panel === "network" && (
@@ -329,6 +455,13 @@ function App() {
           )}
 
           {panel === "api" && <ApiTester />}
+
+          {panel === "settings" && (
+            <BrowserSettings
+              onSearchEngineChange={setSearchEngine}
+              onThemeChange={setTheme}
+            />
+          )}
         </section>
       </main>
     </div>

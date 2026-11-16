@@ -126,6 +126,42 @@ function DownloadManager() {
         }
     };
 
+
+    const clearDownloadHistory = async () => {
+        const hasHistory = downloads.some(
+            item => !["progressing", "paused"].includes(item.state)
+        );
+
+        if (!hasHistory) {
+            setError("No download history available to clear.");
+            return;
+        }
+
+        const confirmed = window.confirm(
+            "Are you sure you want to clear all download history? Active downloads will not be affected."
+        );
+
+        if (!confirmed) return;
+
+        try {
+            setError("");
+
+            const result = await window.browserAPI.clearDownloadHistory();
+
+            if (!result?.success) {
+                setError(result?.error || "Could not clear download history.");
+                return;
+            }
+
+            const updatedDownloads = await window.browserAPI.getDownloads();
+            setDownloads(Array.isArray(updatedDownloads) ? updatedDownloads : []);
+
+        } catch (err) {
+            setError(err.message || "Could not clear download history.");
+        }
+    };
+
+
     const openFile = async (id) => {
         try {
             setError("");
@@ -238,6 +274,18 @@ function DownloadManager() {
                         </button>
                     ))}
                 </div>
+
+
+                <button
+                    className="clear-download-history"
+                    onClick={clearDownloadHistory}
+                    disabled={!downloads.some(
+                        item => !["progressing", "paused"].includes(item.state)
+                    )}
+                >
+                    Clear All
+                </button>
+
 
                 <span className="download-count">
                     {filteredDownloads.length} downloads

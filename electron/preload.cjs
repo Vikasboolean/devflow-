@@ -7,11 +7,16 @@ contextBridge.exposeInMainWorld("browserAPI", {
   forward: () => ipcRenderer.invoke("browser:forward"),
   reload: () => ipcRenderer.invoke("browser:reload"),
 
+  retryPage: () => ipcRenderer.invoke("browser:retry"),
+
   setViewVisible: (visible) =>
     ipcRenderer.send("browser:set-visible", visible),
 
   createTab: (url) =>
     ipcRenderer.invoke("browser:create-tab", url),
+
+  createPrivateTab: (url) =>
+    ipcRenderer.invoke("browser:create-private-tab", url),
 
   switchTab: (id) =>
     ipcRenderer.invoke("browser:switch-tab", id),
@@ -56,8 +61,8 @@ contextBridge.exposeInMainWorld("browserAPI", {
     ipcRenderer.on("browser:network-updated", listener);
 
     return () =>
-        ipcRenderer.removeListener("browser:network-updated", listener);
-},
+      ipcRenderer.removeListener("browser:network-updated", listener);
+  },
 
   // API Collections
   addCollection: (name) =>
@@ -84,7 +89,7 @@ contextBridge.exposeInMainWorld("browserAPI", {
 
   // Developer Console
   onConsoleMessage: (callback) => {
-    if (typeof callback !== "function") return () => {};
+    if (typeof callback !== "function") return () => { };
 
     const listener = (_, data) => callback(data);
 
@@ -111,6 +116,14 @@ contextBridge.exposeInMainWorld("browserAPI", {
       ipcRenderer.removeListener("browser:window-resized", listener);
   },
 
+  // Browser Settings
+
+  getSettings: () =>
+    ipcRenderer.invoke("settings:get"),
+
+  updateSettings: (settings) =>
+    ipcRenderer.invoke("settings:update", settings),
+
   // Download Manager
   getDownloads: () =>
     ipcRenderer.invoke("downloads:get-all"),
@@ -121,6 +134,11 @@ contextBridge.exposeInMainWorld("browserAPI", {
   removeDownload: (id) =>
     ipcRenderer.invoke("downloads:remove", id),
 
+
+  clearDownloadHistory: () =>
+    ipcRenderer.invoke("downloads:clear-history"),
+
+
   openDownloadedFile: (id) =>
     ipcRenderer.invoke("downloads:open-file", id),
 
@@ -128,7 +146,7 @@ contextBridge.exposeInMainWorld("browserAPI", {
     ipcRenderer.invoke("downloads:show-folder", id),
 
   onDownloadsUpdated: (callback) => {
-    if (typeof callback !== "function") return () => {};
+    if (typeof callback !== "function") return () => { };
 
     const listener = (_, data) => callback(data);
 

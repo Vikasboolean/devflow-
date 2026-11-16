@@ -12,6 +12,13 @@ function emptyData() {
     apiCollections: [],
     savedRequests: [],
     downloads: [],
+    settings: {
+      searchEngine: "google",
+      homepage: "https://www.google.com",
+      startupBehavior: "homepage",
+      theme: "dark",
+      downloadLocation: ""
+    },
     nextIds: {
       bookmark: 1,
       history: 1,
@@ -37,10 +44,13 @@ function readData() {
         ? stored.savedRequests
         : [],
       nextIds: { ...defaults.nextIds, ...stored.nextIds },
-
       downloads: Array.isArray(stored.downloads)
         ? stored.downloads
-        : []
+        : [],
+      settings: {
+        ...defaults.settings,
+        ...(stored.settings || {})
+      }
     };
   } catch (error) {
     if (error.code === "ENOENT") return emptyData();
@@ -168,7 +178,7 @@ module.exports = {
     writeData(data);
   },
 
-    // Download Manager Persistence
+  // Download Manager Persistence
 
   saveDownload(download) {
     const data = readData();
@@ -221,7 +231,22 @@ module.exports = {
     const data = readData();
     data.downloads = [];
     writeData(data);
+  },
+
+  // Browser Settings
+  getSettings() {
+    return readData().settings;
+  },
+
+  updateSettings(newSettings) {
+    const data = readData();
+
+    data.settings = {
+      ...data.settings,
+      ...newSettings
+    };
+
+    writeData(data);
+    return data.settings;
   }
-
-
 };

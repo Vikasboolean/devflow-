@@ -32,7 +32,11 @@ function isSafeUrl(value) {
     }
 }
 
+
 function saveCurrentHistory(tab) {
+    // Never save private browsing history.
+    if (tab?.isPrivate) return;
+
     if (!tab || !tab.url || !isSafeUrl(tab.url)) return;
 
     try {
@@ -42,12 +46,16 @@ function saveCurrentHistory(tab) {
     }
 }
 
+
+
 function getTabData() {
     return [...tabs.values()].map((tab) => ({
         id: tab.id,
         title: tab.title,
         url: tab.url,
-        loading: tab.loading
+        loading: tab.loading,
+        isPrivate: tab.isPrivate || false,
+        loadError: tab.loadError || null
     }));
 }
 
@@ -800,11 +808,19 @@ function updateActiveBounds() {
     }
 }
 
-function createTab(url = "https://www.google.com") {
-    const id = randomUUID();
+function createTab(url = null, isPrivate = false) {
+    const settings = database.getSettings();
 
+    const homepage = isSafeUrl(settings.homepage)
+        ? settings.homepage
+        : "https://www.google.com";
+
+    const targetUrl = isSafeUrl(url) ? url : homepage;
+
+    const id = randomUUID();
     const view = new WebContentsView({
         webPreferences: {
+            ...(isPrivate ? { partition: "incognito" } : {}),
             contextIsolation: true,
             nodeIntegration: false,
             sandbox: true
@@ -815,8 +831,9 @@ function createTab(url = "https://www.google.com") {
         id,
         view,
         title: "New Tab",
-        url,
-        loading: true
+        url: targetUrl,
+        loading: true,
+        isPrivate
     };
 
     tabs.set(id, tab);
@@ -846,7 +863,10 @@ function createTab(url = "https://www.google.com") {
     });
 
     wc.setWindowOpenHandler(({ url }) => {
-        if (isSafeUrl(url)) createTab(url);
+        if (isSafeUrl(url)) {
+            createTab(url, isPrivate);
+        }
+
         return { action: "deny" };
     });
 
@@ -857,6 +877,7 @@ function createTab(url = "https://www.google.com") {
 
     wc.on("did-start-loading", () => {
         tab.loading = true;
+        tab.loadError = null;
         publishTabs();
     });
 
@@ -867,6 +888,32 @@ function createTab(url = "https://www.google.com") {
 
         publishTabs();
     });
+
+    // Handle webpage loading errors
+
+    wc.on("did-fail-load", (event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+        if (!isMainFrame) return;
+
+        // Ignore aborted navigation
+        if (errorCode === -3) return;
+
+        tab.loading = false;
+
+        tab.loadError = {
+            code: errorCode,
+            description: errorDescription,
+            url: validatedURL
+        };
+
+        console.error("Page failed to load:", {
+            errorCode,
+            errorDescription,
+            url: validatedURL
+        });
+
+        publishTabs();
+    });
+
 
     wc.on("did-navigate", (_, url) => {
         tab.url = url;
@@ -880,7 +927,7 @@ function createTab(url = "https://www.google.com") {
         publishTabs();
     });
 
-    wc.loadURL(url).catch((error) => {
+    wc.loadURL(targetUrl).catch((error) => {
         console.error("Page loading error:", error);
     });
 
@@ -905,11 +952,13 @@ function switchTab(id) {
     publishTabs();
 }
 
-function closeTab(id) {
+
+async function closeTab(id) {
     const tab = tabs.get(id);
     if (!tab) return;
 
     const wasActive = activeTabId === id;
+    const wasPrivate = tab.isPrivate;
 
     if (wasActive) {
         mainWindow.contentView.removeChildView(tab.view);
@@ -917,6 +966,26 @@ function closeTab(id) {
 
     tab.view.webContents.close();
     tabs.delete(id);
+
+    // Clear private session when the last private tab is closed
+    if (wasPrivate) {
+        const hasPrivateTabs = [...tabs.values()].some(
+            (item) => item.isPrivate
+        );
+
+        if (!hasPrivateTabs) {
+            try {
+                const privateSession = session.fromPartition("incognito");
+
+                await privateSession.clearStorageData();
+                await privateSession.clearCache();
+
+                console.log("Incognito session data cleared");
+            } catch (error) {
+                console.error("Incognito cleanup error:", error);
+            }
+        }
+    }
 
     if (tabs.size === 0) {
         createTab();
@@ -931,6 +1000,7 @@ function closeTab(id) {
     }
 }
 
+
 function createWindow() {
     mainWindow = new BrowserWindow({
         width: 1440,
@@ -944,6 +1014,24 @@ function createWindow() {
             contextIsolation: true,
             nodeIntegration: false
         }
+    });
+
+
+    mainWindow.on("close", () => {
+        const settings = database.getSettings();
+
+        if (settings.startupBehavior !== "continue") {
+            return;
+        }
+
+        const openTabs = Array.from(tabs.values())
+            .filter(tab => !tab.isPrivate)
+            .map(tab => tab.url)
+            .filter(url => isSafeUrl(url));
+
+        database.updateSettings({
+            lastSession: openTabs
+        });
     });
 
 
@@ -976,8 +1064,27 @@ function createWindow() {
         publishTabs();
     });
 
-    createTab();
+    const settings = database.getSettings();
 
+    if (
+        settings.startupBehavior === "continue" &&
+        Array.isArray(settings.lastSession) &&
+        settings.lastSession.length > 0
+    ) {
+        settings.lastSession.forEach(url => {
+            if (isSafeUrl(url)) {
+                createTab(url);
+            }
+        });
+    } else if (settings.startupBehavior === "newtab") {
+        createTab("https://www.google.com");
+    } else {
+        const homepage = isSafeUrl(settings.homepage)
+            ? settings.homepage
+            : "https://www.google.com";
+
+        createTab(homepage);
+    }
     mainWindow.on("closed", () => {
         mainWindow = null;
         tabs.clear();
@@ -1011,6 +1118,13 @@ function decryptAuthConfig(encrypted) {
 
 ipcMain.handle("browser:create-tab", (_, url) => {
     return createTab(isSafeUrl(url) ? url : "https://www.google.com");
+});
+
+ipcMain.handle("browser:create-private-tab", (_, url) => {
+    return createTab(
+        isSafeUrl(url) ? url : "https://www.google.com",
+        true
+    );
 });
 
 ipcMain.handle("db:add-bookmark", (_, data) => {
@@ -1060,6 +1174,49 @@ ipcMain.handle("browser:get-tabs", () => ({
     tabs: getTabData(),
     activeTabId
 }));
+
+// Browser Settings IPC
+
+ipcMain.handle("settings:get", (event) => {
+    if (!isTrustedRenderer(event)) return null;
+
+    return database.getSettings();
+});
+
+ipcMain.handle("settings:update", (event, newSettings) => {
+    if (!isTrustedRenderer(event)) {
+        return { success: false, error: "Unauthorized request" };
+    }
+
+    if (!newSettings || typeof newSettings !== "object" || Array.isArray(newSettings)) {
+        return { success: false, error: "Invalid settings" };
+    }
+
+    const allowedKeys = [
+        "searchEngine",
+        "homepage",
+        "startupBehavior",
+        "theme",
+        "downloadLocation"
+    ];
+
+    const safeSettings = {};
+
+    for (const key of allowedKeys) {
+        if (Object.prototype.hasOwnProperty.call(newSettings, key)) {
+            safeSettings[key] = newSettings[key];
+        }
+    }
+
+    try {
+        database.updateSettings(safeSettings);
+
+        return { success: true, settings: database.getSettings() };
+    } catch (error) {
+        console.error("Settings update error:", error);
+        return { success: false, error: "Could not save settings" };
+    }
+});
 
 ipcMain.handle("browser:get-network-requests", (_, tabId) => {
     if (typeof tabId !== "string") return [];
@@ -1115,6 +1272,23 @@ ipcMain.handle("browser:reload", () => {
     if (isCompletedDownloadUrl) return;
 
     wc.reload();
+});
+
+ipcMain.handle("browser:retry", (event) => {
+    if (!isTrustedRenderer(event)) {
+        return { success: false };
+    }
+
+    const tab = tabs.get(activeTabId);
+    const wc = tab?.view.webContents;
+
+    if (!wc || wc.isDestroyed()) {
+        return { success: false };
+    }
+
+    wc.reload();
+
+    return { success: true };
 });
 
 // ==========================================
@@ -1691,6 +1865,56 @@ ipcMain.handle("downloads:remove", (event, id) => {
 
     return { success: true };
 });
+
+
+ipcMain.handle("downloads:clear-history", (event) => {
+    if (!isTrustedRenderer(event)) {
+        return {
+            success: false,
+            error: "Unauthorized request"
+        };
+    }
+
+    try {
+        // Keep downloads that are still active or paused.
+        const activeDownloads = [...downloads.values()].filter(
+            item => ["progressing", "paused"].includes(item.state)
+        );
+
+        // Remove all saved download history.
+        database.clearDownloads();
+
+        // Remove completed and failed downloads from memory.
+        for (const [id, download] of downloads.entries()) {
+            if (!["progressing", "paused"].includes(download.state)) {
+                downloads.delete(id);
+            }
+        }
+
+        // Preserve active downloads in JSON storage.
+        activeDownloads.forEach(download => {
+            database.saveDownload(getDownloadSnapshot(download));
+        });
+
+        publishDownloads();
+
+        return {
+            success: true,
+            removed: database.getDownloads().length === 0
+                ? undefined
+                : undefined
+        };
+
+    } catch (error) {
+        console.error("Clear download history error:", error);
+
+        return {
+            success: false,
+            error: error.message || "Could not clear download history"
+        };
+    }
+});
+
 
 
 ipcMain.handle("downloads:open-file", async (event, id) => {

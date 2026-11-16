@@ -65,13 +65,31 @@ button {
   cursor: pointer;
 }
 
-.address {
+.address-container {
   flex: 1;
   min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
   padding: 12px;
   border-radius: 8px;
   border: 1px solid #383b44;
   background: #252830;
+}
+
+.search-engine-icon {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  object-fit: contain;
+}
+
+.address {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
   color: white;
   outline: none;
 }
@@ -259,4 +277,131 @@ button {
 
 .saved-item button {
   background: #343944;
+}
+
+
+.browser-error-page {
+  width: 100%;
+  height: 100%;
+  min-height: 400px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #101114;
+  color: #f5f5f5;
+  text-align: center;
+  padding: 30px;
+}
+
+.error-content {
+  max-width: 520px;
+}
+
+.error-icon {
+  font-size: 58px;
+  margin-bottom: 20px;
+  color: #f0a44b;
+}
+
+.error-content h1 {
+  font-size: 28px;
+  margin-bottom: 12px;
+  color: #3978e8;
+}
+
+.error-description {
+  color: #b0b0b8;
+  line-height: 1.6;
+}
+
+.error-url {
+  color: #8e9bb0;
+  overflow-wrap: anywhere;
+  margin-top: 18px;
+}
+
+.error-code {
+  color: #777;
+  font-size: 13px;
+}
+
+.error-actions {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 26px;
+}
+
+.error-actions button {
+  padding: 11px 20px;
+  border: 1px solid #343640;
+  border-radius: 8px;
+  background: #202127;
+  color: white;
+  cursor: pointer;
+}
+
+.error-actions .retry-error-btn {
+  background: #3978e8;
+  border-color: #3978e8;
+}
+
+/* DEVFLOW - ARC STYLE NAVIGATION RAIL */
+
+.navigation-rail {
+  width: 76px;
+  min-width: 76px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 16px 8px;
+  gap: 22px;
+  background: #211e2d;
+  border-right: 1px solid rgba(255,255,255,0.06);
+}
+
+.rail-brand {
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  border-radius: 14px;
+  background: #5145d8;
+  color: white;
+  font-size: 22px;
+  font-weight: 800;
+}
+
+.rail-menu,
+.rail-bottom {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.rail-menu button,
+.rail-bottom button {
+  width: 52px;
+  height: 52px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 14px;
+  background: transparent;
+  color: #b8b2c8;
+  font-size: 21px;
+  transition: 0.2s ease;
+}
+
+.rail-menu button:hover,
+.rail-bottom button:hover {
+  background: #383246;
+  color: white;
+}
+
+.rail-bottom {
+  margin-top: auto;
 }
