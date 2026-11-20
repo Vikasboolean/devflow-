@@ -178,6 +178,30 @@ contextBridge.exposeInMainWorld("browserAPI", {
   stopElementInspection: () =>
     ipcRenderer.invoke("inspector:stop"),
 
+  getDOMTree: () =>
+  ipcRenderer.invoke("inspector:get-dom-tree"),
+
+selectDOMElement: (selector) =>
+  ipcRenderer.invoke("inspector:select-dom-element", selector),
+
+updateElementStyle: (selector, property, value) =>
+  ipcRenderer.invoke(
+    "inspector:update-element-style",
+    { selector, property, value }
+  ),
+
+  getElementBoxModel: (selector) =>
+  ipcRenderer.invoke("inspector:get-box-model", selector),
+
+highlightDOMElement: (selector) =>
+  ipcRenderer.invoke("inspector:highlight-element", selector),
+
+updateElementHTML: (selector, html) =>
+  ipcRenderer.invoke("inspector:update-element-html", {
+    selector,
+    html
+  }),
+
   onElementSelected: (callback) => {
     if (typeof callback !== "function") return () => {};
 

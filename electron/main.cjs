@@ -2084,6 +2084,7 @@ ipcMain.handle("inspector:start", async (event) => {
                         .trim().slice(0, 2000),
                     selector: getSelector(el),
                     outerHTML: el.outerHTML.slice(0, 10000),
+                    innerHTML: el.innerHTML.slice(0, 10000),
                     attributes: [...el.attributes].map(attr => ({
                         name: attr.name,
                         value: attr.value.slice(0, 1000)
@@ -2183,6 +2184,623 @@ ipcMain.handle("inspector:stop", async (event) => {
         );
 
         return { success: true };
+    } catch (error) {
+        return { success: false, error: error.message };
+    }
+});
+
+
+// ELEMENT INSPECTOR - DOM TREE
+
+ipcMain.handle("inspector:get-dom-tree", async (event) => {
+    if (!isTrustedRenderer(event)) {
+        return { success: false, error: "Unauthorized request" };
+    }
+
+    const tab = tabs.get(activeTabId);
+
+    if (!tab || tab.view.webContents.isDestroyed()) {
+        return { success: false, error: "No active browser tab" };
+    }
+
+    const wc = tab.view.webContents;
+
+    if (!isSafeUrl(wc.getURL())) {
+        return { success: false, error: "Cannot inspect this page" };
+    }
+
+    try {
+        const tree = await wc.executeJavaScript(`
+            (() => {
+                let count = 0;
+                const MAX_NODES = 300;
+                const MAX_DEPTH = 8;
+
+                function getSelector(el) {
+                    if (el.id) {
+                        return "#" + CSS.escape(el.id);
+                    }
+
+                    const parts = [];
+
+                    while (
+                        el &&
+                        el.nodeType === Node.ELEMENT_NODE &&
+                        el !== document.documentElement
+                    ) {
+                        let part = el.tagName.toLowerCase();
+
+                        if (el.parentElement) {
+                            const siblings = Array.from(
+                                el.parentElement.children
+                            ).filter(
+                                child => child.tagName === el.tagName
+                            );
+
+                            if (siblings.length > 1) {
+                                part += ":nth-of-type(" +
+                                    (siblings.indexOf(el) + 1) + ")";
+                            }
+                        }
+
+                        parts.unshift(part);
+                        el = el.parentElement;
+                    }
+
+                    return "html > " + parts.join(" > ");
+                }
+
+                function buildTree(el, depth = 0) {
+                    if (
+                        !(el instanceof Element) ||
+                        count >= MAX_NODES ||
+                        depth > MAX_DEPTH
+                    ) {
+                        return null;
+                    }
+
+                    count++;
+
+                    const children = [];
+
+                    if (depth < MAX_DEPTH) {
+                        for (const child of el.children) {
+                            if (count >= MAX_NODES) break;
+
+                            const node = buildTree(child, depth + 1);
+
+                            if (node) children.push(node);
+                        }
+                    }
+
+                    return {
+                        tagName: el.tagName.toLowerCase(),
+                        id: el.id || "",
+                        className:
+                            typeof el.className === "string"
+                                ? el.className
+                                : "",
+                        selector: getSelector(el),
+                        children,
+                        hasChildren: el.children.length > 0
+                    };
+                }
+
+                return buildTree(document.body);
+            })()
+        `);
+
+        return {
+            success: true,
+            tree
+        };
+
+    } catch (error) {
+        return {
+            success: false,
+            error: error.message
+        };
+    }
+});
+
+
+// SELECT ELEMENT FROM DOM TREE
+
+ipcMain.handle("inspector:select-dom-element", async (event, selector) => {
+    if (!isTrustedRenderer(event)) {
+        return { success: false, error: "Unauthorized request" };
+    }
+
+    if (
+        typeof selector !== "string" ||
+        !selector.trim() ||
+        selector.length > 2000
+    ) {
+        return { success: false, error: "Invalid selector" };
+    }
+
+    const tab = tabs.get(activeTabId);
+
+    if (!tab || tab.view.webContents.isDestroyed()) {
+        return { success: false, error: "No active browser tab" };
+    }
+
+    const wc = tab.view.webContents;
+
+    if (!isSafeUrl(wc.getURL())) {
+        return { success: false, error: "Cannot inspect this page" };
+    }
+
+    try {
+        const result = await wc.executeJavaScript(`
+            (() => {
+                const el = document.querySelector(
+                    ${JSON.stringify(selector)}
+                );
+
+                if (!el) {
+                    return {
+                        success: false,
+                        error: "Element not found"
+                    };
+                }
+
+                const rect = el.getBoundingClientRect();
+                const style = getComputedStyle(el);
+
+                const styleKeys = [
+                    "color",
+                    "backgroundColor",
+                    "fontSize",
+                    "fontFamily",
+                    "fontWeight",
+                    "display",
+                    "position",
+                    "margin",
+                    "padding",
+                    "width",
+                    "height",
+                    "border",
+                    "borderRadius",
+                    "opacity"
+                ];
+
+                const styles = {};
+
+                styleKeys.forEach(key => {
+                    styles[key] = style[key];
+                });
+
+                return {
+                    success: true,
+                    tagName: el.tagName.toLowerCase(),
+                    id: el.id || "",
+                    className: typeof el.className === "string"
+                        ? el.className
+                        : "",
+                    text: (el.innerText || el.textContent || "")
+                        .trim()
+                        .slice(0, 500),
+                    selector: ${JSON.stringify(selector)},
+                    outerHTML: el.outerHTML.slice(0, 10000),
+                    attributes: Array.from(el.attributes).map(attr => ({
+                        name: attr.name,
+                        value: attr.value
+                    })),
+                    dimensions: {
+                        width: Math.round(rect.width),
+                        height: Math.round(rect.height)
+                    },
+                    styles
+                };
+            })()
+        `);
+
+        return result;
+
+    } catch (error) {
+        return {
+            success: false,
+            error: error.message
+        };
+    }
+});
+
+
+// ELEMENT INSPECTOR - LIVE CSS UPDATE
+
+ipcMain.handle("inspector:update-element-style", async (event, data) => {
+    if (!isTrustedRenderer(event)) {
+        return { success: false, error: "Unauthorized request" };
+    }
+
+    const { selector, property, value } = data || {};
+
+    if (
+        typeof selector !== "string" ||
+        !selector.trim() ||
+        selector.length > 2000 ||
+        typeof property !== "string" ||
+        typeof value !== "string" ||
+        value.length > 500
+    ) {
+        return { success: false, error: "Invalid CSS input" };
+    }
+
+    // Only allow common visual CSS properties.
+    const allowedProperties = new Set([
+        "color",
+        "background-color",
+        "font-size",
+        "font-family",
+        "font-weight",
+        "font-style",
+        "text-align",
+        "text-decoration",
+        "line-height",
+        "letter-spacing",
+        "width",
+        "height",
+        "min-width",
+        "max-width",
+        "min-height",
+        "max-height",
+        "margin",
+        "margin-top",
+        "margin-right",
+        "margin-bottom",
+        "margin-left",
+        "padding",
+        "padding-top",
+        "padding-right",
+        "padding-bottom",
+        "padding-left",
+        "border",
+        "border-color",
+        "border-width",
+        "border-radius",
+        "display",
+        "position",
+        "opacity",
+        "box-shadow",
+        "overflow",
+        "visibility"
+    ]);
+
+    if (!allowedProperties.has(property)) {
+        return { success: false, error: "CSS property not allowed" };
+    }
+
+    // Reject potentially executable or externally loaded CSS values.
+    if (/url\s*\(|expression\s*\(|javascript:|@import|[{};]/i.test(value)) {
+        return { success: false, error: "Invalid CSS value" };
+    }
+
+    const tab = tabs.get(activeTabId);
+
+    if (!tab || tab.view.webContents.isDestroyed()) {
+        return { success: false, error: "No active browser tab" };
+    }
+
+    const wc = tab.view.webContents;
+
+    if (!isSafeUrl(wc.getURL())) {
+        return { success: false, error: "Cannot edit styles on this page" };
+    }
+
+    try {
+        const result = await wc.executeJavaScript(`
+            (() => {
+                const el = document.querySelector(
+                    ${JSON.stringify(selector)}
+                );
+
+                if (!el) {
+                    return {
+                        success: false,
+                        error: "Element not found"
+                    };
+                }
+
+                el.style.setProperty(
+                    ${JSON.stringify(property)},
+                    ${JSON.stringify(value)}
+                );
+
+                return {
+                    success: true,
+                    property: ${JSON.stringify(property)},
+                    value: el.style.getPropertyValue(
+                        ${JSON.stringify(property)}
+                    )
+                };
+            })()
+        `);
+
+        return result;
+
+    } catch (error) {
+        return {
+            success: false,
+            error: error.message
+        };
+    }
+});
+
+
+// ELEMENT INSPECTOR - EDIT HTML
+
+ipcMain.handle("inspector:update-element-html", async (event, data) => {
+    if (!isTrustedRenderer(event)) {
+        return { success: false, error: "Unauthorized request" };
+    }
+
+    const { selector, html } = data || {};
+
+    if (
+        typeof selector !== "string" ||
+        !selector.trim() ||
+        selector.length > 2000 ||
+        typeof html !== "string" ||
+        html.length > 20000
+    ) {
+        return { success: false, error: "Invalid HTML input" };
+    }
+
+    const tab = tabs.get(activeTabId);
+
+    if (!tab || tab.view.webContents.isDestroyed()) {
+        return { success: false, error: "No active browser tab" };
+    }
+
+    const wc = tab.view.webContents;
+
+    if (!isSafeUrl(wc.getURL())) {
+        return { success: false, error: "Cannot edit HTML on this page" };
+    }
+
+    try {
+        const result = await wc.executeJavaScript(`
+            (() => {
+                const selector = ${JSON.stringify(selector)};
+                const html = ${JSON.stringify(html)};
+
+                const el = document.querySelector(selector);
+
+                if (!el) {
+                    return {
+                        success: false,
+                        error: "Element not found"
+                    };
+                }
+
+                const template = document.createElement("template");
+                template.innerHTML = html;
+
+                // Remove dangerous HTML elements.
+                template.content.querySelectorAll(
+                    "script, iframe, object, embed, base, meta, link, foreignObject"
+                ).forEach(node => node.remove());
+
+                // Remove event handlers and unsafe URL attributes.
+                template.content.querySelectorAll("*").forEach(node => {
+                    Array.from(node.attributes).forEach(attr => {
+                        const name = attr.name.toLowerCase();
+                        const value = attr.value.trim();
+
+                        if (
+                            name.startsWith("on") ||
+                            name === "srcdoc" ||
+                            (
+                                ["href", "src", "action", "formaction", "xlink:href"].includes(name) &&
+                                /^(javascript|vbscript):/i.test(value)
+                            )
+                        ) {
+                            node.removeAttribute(attr.name);
+                        }
+                    });
+                });
+
+                // Update the selected element's children.
+                el.replaceChildren(template.content.cloneNode(true));
+
+                return {
+                    success: true,
+                    outerHTML: el.outerHTML.slice(0, 20000),
+                    message: "HTML updated successfully"
+                };
+            })()
+        `);
+
+        return result;
+
+    } catch (error) {
+        return {
+            success: false,
+            error: error.message
+        };
+    }
+});
+
+
+
+// ELEMENT INSPECTOR - BOX MODEL
+
+ipcMain.handle("inspector:get-box-model", async (event, selector) => {
+    if (!isTrustedRenderer(event)) {
+        return { success: false, error: "Unauthorized request" };
+    }
+
+    if (typeof selector !== "string" || !selector.trim() || selector.length > 2000) {
+        return { success: false, error: "Invalid selector" };
+    }
+
+    const tab = tabs.get(activeTabId);
+
+    if (!tab || tab.view.webContents.isDestroyed()) {
+        return { success: false, error: "No active browser tab" };
+    }
+
+    const wc = tab.view.webContents;
+
+    if (!isSafeUrl(wc.getURL())) {
+        return { success: false, error: "Cannot inspect this page" };
+    }
+
+    try {
+        return await wc.executeJavaScript(`
+            (() => {
+                const el = document.querySelector(${JSON.stringify(selector)});
+
+                if (!el) {
+                    return { success: false, error: "Element not found" };
+                }
+
+                const style = getComputedStyle(el);
+                const rect = el.getBoundingClientRect();
+
+                const number = (value) => parseFloat(value) || 0;
+
+                return {
+                    success: true,
+                    width: Math.round(rect.width),
+                    height: Math.round(rect.height),
+                    margin: {
+                        top: number(style.marginTop),
+                        right: number(style.marginRight),
+                        bottom: number(style.marginBottom),
+                        left: number(style.marginLeft)
+                    },
+                    border: {
+                        top: number(style.borderTopWidth),
+                        right: number(style.borderRightWidth),
+                        bottom: number(style.borderBottomWidth),
+                        left: number(style.borderLeftWidth)
+                    },
+                    padding: {
+                        top: number(style.paddingTop),
+                        right: number(style.paddingRight),
+                        bottom: number(style.paddingBottom),
+                        left: number(style.paddingLeft)
+                    },
+                    content: {
+                        width: Math.max(
+                            0,
+                            rect.width -
+                            number(style.paddingLeft) -
+                            number(style.paddingRight) -
+                            number(style.borderLeftWidth) -
+                            number(style.borderRightWidth)
+                        ),
+                        height: Math.max(
+                            0,
+                            rect.height -
+                            number(style.paddingTop) -
+                            number(style.paddingBottom) -
+                            number(style.borderTopWidth) -
+                            number(style.borderBottomWidth)
+                        )
+                    },
+                    boxSizing: style.boxSizing
+                };
+            })()
+        `);
+    } catch (error) {
+        return { success: false, error: error.message };
+    }
+});
+
+
+// ELEMENT INSPECTOR - DOM HIGHLIGHT
+
+ipcMain.handle("inspector:highlight-element", async (event, selector) => {
+    if (!isTrustedRenderer(event)) {
+        return { success: false, error: "Unauthorized request" };
+    }
+
+    if (typeof selector !== "string" || !selector.trim() || selector.length > 2000) {
+        return { success: false, error: "Invalid selector" };
+    }
+
+    const tab = tabs.get(activeTabId);
+
+    if (!tab || tab.view.webContents.isDestroyed()) {
+        return { success: false, error: "No active browser tab" };
+    }
+
+    const wc = tab.view.webContents;
+
+    if (!isSafeUrl(wc.getURL())) {
+        return { success: false, error: "Cannot inspect this page" };
+    }
+
+    try {
+        return await wc.executeJavaScript(`
+            (() => {
+                const el = document.querySelector(${JSON.stringify(selector)});
+
+                if (!el) {
+                    return { success: false, error: "Element not found" };
+                }
+
+                let overlay = document.getElementById(
+                    "__devflow_dom_highlight__"
+                );
+
+                if (!overlay) {
+                    overlay = document.createElement("div");
+                    overlay.id = "__devflow_dom_highlight__";
+
+                    Object.assign(overlay.style, {
+                        position: "fixed",
+                        zIndex: "2147483646",
+                        pointerEvents: "none",
+                        border: "2px solid #3b82f6",
+                        background: "rgba(59,130,246,0.16)",
+                        boxShadow: "0 0 0 1px rgba(255,255,255,0.6)",
+                        transition: "all 0.1s ease",
+                        display: "none"
+                    });
+
+                    document.documentElement.appendChild(overlay);
+                }
+
+                const update = () => {
+                    if (!el.isConnected) {
+                        overlay.style.display = "none";
+                        return;
+                    }
+
+                    const rect = el.getBoundingClientRect();
+
+                    Object.assign(overlay.style, {
+                        display: "block",
+                        left: rect.left + "px",
+                        top: rect.top + "px",
+                        width: rect.width + "px",
+                        height: rect.height + "px"
+                    });
+                };
+
+                if (window.__devflowHighlightCleanup) {
+                    window.__devflowHighlightCleanup();
+                }
+
+                window.addEventListener("scroll", update, true);
+                window.addEventListener("resize", update);
+
+                window.__devflowHighlightCleanup = () => {
+                    window.removeEventListener("scroll", update, true);
+                    window.removeEventListener("resize", update);
+                    overlay.remove();
+                    delete window.__devflowHighlightCleanup;
+                };
+
+                update();
+
+                return { success: true };
+            })()
+        `);
     } catch (error) {
         return { success: false, error: error.message };
     }

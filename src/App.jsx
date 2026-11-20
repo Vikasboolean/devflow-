@@ -1,4 +1,3 @@
-
 import { useEffect, useRef, useState } from "react";
 import ApiTester from "./ApiTester";
 import "./App.css";
@@ -23,6 +22,7 @@ function App() {
   const [consoleMessages, setConsoleMessages] = useState([]);
   const [searchEngine, setSearchEngine] = useState("google");
   const [theme, setTheme] = useState("dark");
+  const inspectorViewportRef = useRef(null);
 
   useEffect(() => {
     window.browserAPI.getSettings()
@@ -87,14 +87,19 @@ function App() {
     if (toolId === "history") loadHistory();
   }), []);
 
-  useEffect(() => {
-    const viewport = viewportRef.current;
-    const active = tabs.find((tab) => tab.id === activeTabId);
-    const showBrowserView =
-      (panel === "" || panel === "responsive") && !active?.loadError;
 
-    // Responsive mode owns its own preview bounds, so the normal viewport
-    // ref is intentionally absent while that panel is mounted.
+  useEffect(() => {
+    const active = tabs.find((tab) => tab.id === activeTabId);
+
+    const viewport =
+      panel === "inspector"
+        ? inspectorViewportRef.current
+        : viewportRef.current;
+
+    const showBrowserView =
+      (panel === "" || panel === "inspector" || panel === "responsive") &&
+      !active?.loadError;
+
     if (panel === "responsive") {
       window.browserAPI.setViewVisible(showBrowserView);
       return;
@@ -109,10 +114,6 @@ function App() {
 
     const updateBounds = () => {
       const rect = viewport.getBoundingClientRect();
-
-      console.log(
-        `DEVFLOW VIEWPORT: x=${rect.left}, y=${rect.top}, width=${rect.width}, height=${rect.height}, windowHeight=${window.innerHeight}`
-      );
 
       window.browserAPI.resize({
         x: rect.left,
@@ -136,6 +137,7 @@ function App() {
       window.browserAPI.setViewVisible(false);
     };
   }, [panel, activeTabId, tabs]);
+
 
 
   const navigate = async () => {
@@ -343,7 +345,16 @@ function App() {
           )}
 
           {panel === "inspector" && (
-            <ElementInspector activeTabId={activeTabId} />
+            <div className="inspector-workspace">
+              <div
+                className="inspector-browser-viewport"
+                ref={inspectorViewportRef}
+              />
+
+              <div className="inspector-side-panel">
+                <ElementInspector activeTabId={activeTabId} />
+              </div>
+            </div>
           )}
 
           {panel === "downloads" && (
