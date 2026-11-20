@@ -1,0 +1,138 @@
+
+.element-inspector {
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  padding: 24px;
+  color: #e8e8ef;
+  background: #111216;
+  font-family: Inter, sans-serif;
+}
+
+.inspector-header,
+.inspector-element-title,
+.inspector-html-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.inspector-header h2 {
+  margin: 0;
+  font-size: 22px;
+}
+
+.inspector-header p,
+.inspector-empty p {
+  color: #9294a1;
+  font-size: 13px;
+}
+
+.inspect-button,
+.inspect-active,
+.inspector-element-title button,
+.inspector-html-heading button {
+  padding: 9px 14px;
+  border: 0;
+  border-radius: 7px;
+  background: #2878ef;
+  color: white;
+  cursor: pointer;
+}
+
+.inspect-active {
+  background: #b83d48;
+}
+
+.inspector-hint {
+  margin-top: 20px;
+  padding: 12px;
+  border: 1px solid #345a92;
+  border-radius: 8px;
+  background: #17263d;
+  color: #b9d4ff;
+  font-size: 13px;
+}
+
+.inspector-error {
+  margin-top: 16px;
+  color: #ff7777;
+}
+
+.inspector-empty {
+  min-height: 300px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.inspector-empty-icon {
+  font-size: 42px;
+  color: #438bff;
+}
+
+.inspector-tabs {
+  display: flex;
+  gap: 8px;
+  margin-top: 24px;
+  border-bottom: 1px solid #30313a;
+}
+
+.inspector-tabs button {
+  padding: 12px;
+  border: 0;
+  background: transparent;
+  color: #a5a6b2;
+  text-transform: capitalize;
+  cursor: pointer;
+}
+
+.inspector-tabs button.active {
+  color: #65a1ff;
+  border-bottom: 2px solid #3988ff;
+}
+
+.inspector-content {
+  max-width: 1000px;
+  padding-top: 20px;
+}
+
+.inspector-content h3 {
+  font-size: 15px;
+  margin-bottom: 16px;
+}
+
+.inspector-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 180px) minmax(0, 1fr);
+  gap: 16px;
+  padding: 12px;
+  border-bottom: 1px solid #282a32;
+  font-size: 13px;
+}
+
+.inspector-row span {
+  color: #9294a1;
+}
+
+.inspector-row strong {
+  overflow-wrap: anywhere;
+  font-weight: 500;
+}
+
+.selector-value {
+  color: #79aaff;
+}
+
+.inspector-html {
+  padding: 16px;
+  border-radius: 8px;
+  background: #191b22;
+  color: #a8d8a8;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}

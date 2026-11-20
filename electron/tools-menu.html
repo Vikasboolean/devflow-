@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DevFlow Tools</title>
+    <style>
+      * { box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+      body {
+        padding: 7px;
+        background: transparent;
+        color: #e8e3ef;
+        font: 14px Arial, sans-serif;
+      }
+      .menu {
+        height: 100%;
+        padding: 7px;
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+        background: #252231;
+        border: 1px solid #454052;
+        border-radius: 13px;
+        box-shadow: 0 12px 35px rgba(0, 0, 0, .4);
+        animation: slide-down 160ms ease-out;
+      }
+      button {
+        min-height: 37px;
+        width: 100%;
+        padding: 0 12px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        border: 0;
+        border-radius: 8px;
+        background: transparent;
+        color: #d4cede;
+        text-align: left;
+        font: inherit;
+        cursor: pointer;
+      }
+      button:hover, button:focus-visible {
+        outline: none;
+        background: #383246;
+        color: white;
+      }
+      .icon { width: 22px; color: #b9c8f2; text-align: center; font-size: 18px; }
+      .separator { height: 1px; margin: 3px 8px; background: #454052; }
+      @keyframes slide-down {
+        from { opacity: 0; transform: translateY(-8px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="menu" role="menu" aria-label="DevFlow tools">
+      <button data-tool="private-tab"><span class="icon">◉</span>New Private Tab</button>
+      <div class="separator"></div>
+      <button data-tool=""><span class="icon">⌂</span>Home</button>
+      <button data-tool="bookmarks"><span class="icon">☆</span>Bookmarks</button>
+      <button data-tool="history"><span class="icon">◷</span>History</button>
+      <button data-tool="api"><span class="icon">⌘</span>API Testing</button>
+      <button data-tool="developer"><span class="icon">⌨</span>Developer Console</button>
+      <button data-tool="network"><span class="icon">⇄</span>Network Monitor</button>
+      <button data-tool="downloads"><span class="icon">↓</span>Downloads</button>
+      <button data-tool="responsive"><span class="icon">▣</span>Responsive Mode</button>
+      <button data-tool="inspector"> <span class="icon">⌕</span> Element Inspector</button>
+      <button data-tool="settings"><span class="icon">⚙</span>Settings</button>
+      
+    </div>
+    <script>
+      let menuWasEntered = false;
+      document.querySelectorAll("[data-tool]").forEach((button) => {
+        button.addEventListener("click", () => {
+          window.toolsMenuAPI.selectTool(button.dataset.tool);
+        });
+      });
+      document.addEventListener("mouseenter", () => {
+        menuWasEntered = true;
+      });
+      document.addEventListener("mouseleave", () => {
+        if (menuWasEntered) window.toolsMenuAPI.closeMenu();
+      });
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") window.close();
+      });
+    </script>
+  </body>
+</html>

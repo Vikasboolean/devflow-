@@ -3,6 +3,7 @@ const {
     app,
     BrowserWindow,
     WebContentsView,
+    screen,
     ipcMain,
     safeStorage,
     session,
@@ -13,9 +14,19 @@ const path = require("path");
 const { randomUUID } = require("crypto");
 
 let mainWindow;
+let toolsWindow = null;
+let toolsWindowReady = false;
+let toolsWindowRequested = false;
 let tabs = new Map();
 let activeTabId = null;
-let viewBounds = { x: 220, y: 110, width: 900, height: 700 };
+let responsiveModeActive = false;
+let responsiveViewBounds = null;
+let viewBounds = {
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0
+};
 let networkMonitoringInitialized = false;
 const networkRequests = new Map();
 const MAX_NETWORK_REQUESTS = 500;
@@ -804,7 +815,11 @@ function publishConsoleMessage(tab, message) {
 function updateActiveBounds() {
     const activeTab = tabs.get(activeTabId);
     if (activeTab) {
-        activeTab.view.setBounds(viewBounds);
+        activeTab.view.setBounds(
+            responsiveModeActive && responsiveViewBounds
+                ? responsiveViewBounds
+                : viewBounds
+        );
     }
 }
 
@@ -1016,6 +1031,8 @@ function createWindow() {
         }
     });
 
+    createToolsMenuWindow();
+
 
     mainWindow.on("close", () => {
         const settings = database.getSettings();
@@ -1036,17 +1053,19 @@ function createWindow() {
 
 
     mainWindow.on("resize", () => {
-        const contentBounds = mainWindow.getContentBounds();
+        if (!responsiveModeActive) {
+            const contentBounds = mainWindow.getContentBounds();
 
-        viewBounds.width = Math.max(
-            0,
-            contentBounds.width - viewBounds.x
-        );
+            viewBounds.width = Math.max(
+                0,
+                contentBounds.width - viewBounds.x
+            );
 
-        viewBounds.height = Math.max(
-            0,
-            contentBounds.height - viewBounds.y
-        );
+            viewBounds.height = Math.max(
+                0,
+                contentBounds.height - viewBounds.y
+            );
+        }
 
         updateActiveBounds();
 
@@ -1746,15 +1765,23 @@ ipcMain.handle("api:send-request", async (_, data) => {
 
 
 ipcMain.on("browser:resize", (_, bounds) => {
-    if (!bounds || !Object.values(bounds).every(Number.isFinite)) return;
+    if (!mainWindow || mainWindow.isDestroyed()) return;
 
-    const contentBounds = mainWindow.getContentBounds();
+    if (
+        !bounds ||
+        ![bounds.x, bounds.y, bounds.width, bounds.height].every(Number.isFinite)
+    ) {
+        return;
+    }
+
+    // Do not overwrite responsive preview bounds.
+    if (responsiveModeActive) return;
 
     viewBounds = {
         x: Math.round(bounds.x),
         y: Math.round(bounds.y),
-        width: Math.max(0, contentBounds.width - Math.round(bounds.x)),
-        height: Math.max(0, contentBounds.height - Math.round(bounds.y))
+        width: Math.max(0, Math.round(bounds.width)),
+        height: Math.max(0, Math.round(bounds.height))
     };
 
     updateActiveBounds();
@@ -1763,18 +1790,506 @@ ipcMain.on("browser:resize", (_, bounds) => {
 
 ipcMain.on("browser:set-visible", (_, visible) => {
     const tab = tabs.get(activeTabId);
+
     if (!tab || !mainWindow || mainWindow.isDestroyed()) return;
 
     try {
         if (visible === true) {
             mainWindow.contentView.addChildView(tab.view);
+
+            // Restore whichever viewport belongs to the currently open panel.
+            tab.view.setBounds(
+                responsiveModeActive && responsiveViewBounds
+                    ? responsiveViewBounds
+                    : viewBounds
+            );
         } else {
+            // Hide the native Chromium view completely.
+            tab.view.setBounds({
+                x: 0,
+                y: 0,
+                width: 0,
+                height: 0
+            });
+
             mainWindow.contentView.removeChildView(tab.view);
         }
     } catch (error) {
         console.error("Browser visibility error:", error);
     }
 });
+
+
+ipcMain.handle("browser:responsive-mode", async (event, settings) => {
+    if (!isTrustedRenderer(event)) {
+        return { success: false, error: "Unauthorized request" };
+    }
+
+    const tab = tabs.get(activeTabId);
+    if (!tab || tab.view.webContents.isDestroyed()) {
+        return { success: false, error: "No active browser tab" };
+    }
+
+    const { bounds, width, height, dpr, touch } = settings || {};
+
+    if (
+        !bounds ||
+        ![bounds.x, bounds.y, bounds.width, bounds.height,
+            width, height, dpr].every(Number.isFinite) ||
+        bounds.width <= 0 ||
+        bounds.height <= 0 ||
+        width < 200 || width > 3840 ||
+        height < 200 || height > 3840 ||
+        dpr < 1 || dpr > 3 ||
+        typeof touch !== "boolean"
+    ) {
+        return { success: false, error: "Invalid device settings" };
+    }
+
+    try {
+        const wc = tab.view.webContents;
+
+        responsiveViewBounds = {
+            x: Math.round(bounds.x),
+            y: Math.round(bounds.y),
+            width: Math.round(bounds.width),
+            height: Math.round(bounds.height)
+        };
+        responsiveModeActive = true;
+
+        // Attach and size the native view before awaiting CDP. This avoids
+        // leaving a zero-sized/old-sized view visible while emulation starts.
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            if (!mainWindow.contentView.children.includes(tab.view)) {
+                mainWindow.contentView.addChildView(tab.view);
+            }
+        }
+        tab.view.setBounds(responsiveViewBounds);
+
+        // Debugger attachment is normally established when the tab is
+        // created. Attach here as a fallback so responsive emulation also
+        // works for tabs created before that setup completed.
+        if (!wc.debugger.isAttached()) {
+            wc.debugger.attach("1.3");
+        }
+
+        await wc.debugger.sendCommand(
+            "Emulation.setDeviceMetricsOverride",
+            {
+                width: Math.round(width),
+                height: Math.round(height),
+                deviceScaleFactor: dpr,
+                mobile: true
+            }
+        );
+
+        await wc.debugger.sendCommand(
+            "Emulation.setTouchEmulationEnabled",
+            {
+                enabled: touch,
+                maxTouchPoints: touch ? 5 : 1
+            }
+        );
+
+        return { success: true };
+    } catch (error) {
+        console.error("Responsive emulation error:", error);
+
+        return {
+            success: false,
+            error: error.message
+        };
+    }
+});
+
+
+ipcMain.handle("browser:responsive-reset", async (event) => {
+    if (!isTrustedRenderer(event)) {
+        return { success: false, error: "Unauthorized request" };
+    }
+
+    const tab = tabs.get(activeTabId);
+
+    if (!tab || tab.view.webContents.isDestroyed()) {
+        return { success: false, error: "No active browser tab" };
+    }
+
+    const wc = tab.view.webContents;
+
+    // Restore normal browser layout FIRST.
+    responsiveModeActive = false;
+    responsiveViewBounds = null;
+
+    try {
+        tab.view.setBounds(viewBounds);
+
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            if (!mainWindow.contentView.children.includes(tab.view)) {
+                mainWindow.contentView.addChildView(tab.view);
+            }
+        }
+
+        // Then clear device emulation.
+        if (wc.debugger.isAttached()) {
+            await wc.debugger.sendCommand(
+                "Emulation.clearDeviceMetricsOverride"
+            );
+
+            await wc.debugger.sendCommand(
+                "Emulation.setTouchEmulationEnabled",
+                { enabled: false }
+            );
+        }
+
+        // Reapply normal bounds after emulation reset.
+        tab.view.setBounds(viewBounds);
+
+        return { success: true };
+    } catch (error) {
+        console.error("Responsive reset error:", error);
+
+        // Never leave the browser stuck in responsive bounds.
+        responsiveModeActive = false;
+        responsiveViewBounds = null;
+        tab.view.setBounds(viewBounds);
+
+        return {
+            success: false,
+            error: error.message
+        };
+    }
+});
+
+
+// ==========================================
+// ELEMENT INSPECTOR
+// ==========================================
+
+const inspectorPollers = new Map();
+
+ipcMain.handle("inspector:start", async (event) => {
+    if (!isTrustedRenderer(event)) {
+        return { success: false, error: "Unauthorized request" };
+    }
+
+    const tab = tabs.get(activeTabId);
+    if (!tab || tab.view.webContents.isDestroyed()) {
+        return { success: false, error: "No active browser tab" };
+    }
+
+    const wc = tab.view.webContents;
+
+    if (!isSafeUrl(wc.getURL())) {
+        return {
+            success: false,
+            error: "Inspector works only on HTTP/HTTPS pages"
+        };
+    }
+
+    try {
+        const existing = inspectorPollers.get(tab.id);
+        if (existing) clearInterval(existing);
+
+        await wc.executeJavaScript(`(() => {
+            window.__devflowInspectorCleanup?.();
+
+            const overlay = document.createElement("div");
+            overlay.id = "__devflow_inspector_overlay__";
+
+            Object.assign(overlay.style, {
+                position: "fixed",
+                zIndex: "2147483647",
+                pointerEvents: "none",
+                border: "2px solid #3b82f6",
+                background: "rgba(59,130,246,0.12)",
+                display: "none"
+            });
+
+            document.documentElement.appendChild(overlay);
+
+            let selected = null;
+
+            const getSelector = (el) => {
+                if (el.id) return "#" + CSS.escape(el.id);
+
+                const parts = [];
+                let node = el;
+
+                while (node && node.nodeType === 1 && parts.length < 6) {
+                    let part = node.tagName.toLowerCase();
+
+                    if (node.classList.length) {
+                        part += "." + [...node.classList]
+                            .slice(0, 2)
+                            .map(CSS.escape)
+                            .join(".");
+                    }
+
+                    const parent = node.parentElement;
+                    if (parent) {
+                        const siblings = [...parent.children]
+                            .filter(item => item.tagName === node.tagName);
+
+                        if (siblings.length > 1) {
+                            part += ":nth-of-type(" +
+                                (siblings.indexOf(node) + 1) + ")";
+                        }
+                    }
+
+                    parts.unshift(part);
+                    node = parent;
+                }
+
+                return parts.join(" > ");
+            };
+
+            const onMove = (event) => {
+                const el = document.elementFromPoint(
+                    event.clientX,
+                    event.clientY
+                );
+
+                if (!el || el === overlay) return;
+
+                const rect = el.getBoundingClientRect();
+
+                Object.assign(overlay.style, {
+                    display: "block",
+                    left: rect.left + "px",
+                    top: rect.top + "px",
+                    width: rect.width + "px",
+                    height: rect.height + "px"
+                });
+            };
+
+            const onClick = (event) => {
+                const el = event.target;
+
+                if (!(el instanceof Element) || el === overlay) return;
+
+                event.preventDefault();
+                event.stopPropagation();
+                event.stopImmediatePropagation();
+
+                const rect = el.getBoundingClientRect();
+                const style = getComputedStyle(el);
+
+                selected = {
+                    tagName: el.tagName.toLowerCase(),
+                    id: el.id || "",
+                    className: typeof el.className === "string"
+                        ? el.className
+                        : "",
+                    text: (el.innerText || el.textContent || "")
+                        .trim().slice(0, 2000),
+                    selector: getSelector(el),
+                    outerHTML: el.outerHTML.slice(0, 10000),
+                    attributes: [...el.attributes].map(attr => ({
+                        name: attr.name,
+                        value: attr.value.slice(0, 1000)
+                    })),
+                    dimensions: {
+                        width: Math.round(rect.width),
+                        height: Math.round(rect.height),
+                        x: Math.round(rect.x),
+                        y: Math.round(rect.y)
+                    },
+                    styles: {
+                        color: style.color,
+                        backgroundColor: style.backgroundColor,
+                        fontSize: style.fontSize,
+                        fontFamily: style.fontFamily,
+                        display: style.display,
+                        position: style.position,
+                        margin: style.margin,
+                        padding: style.padding
+                    }
+                };
+
+                window.__devflowInspectorSelection = selected;
+                overlay.style.display = "none";
+            };
+
+            const cleanup = () => {
+                document.removeEventListener("mousemove", onMove, true);
+                document.removeEventListener("click", onClick, true);
+                overlay.remove();
+                delete window.__devflowInspectorSelection;
+                delete window.__devflowInspectorCleanup;
+            };
+
+            document.addEventListener("mousemove", onMove, true);
+            document.addEventListener("click", onClick, true);
+
+            window.__devflowInspectorCleanup = cleanup;
+            window.__devflowInspectorSelection = null;
+
+            return true;
+        })()`);
+
+        const poller = setInterval(async () => {
+            if (wc.isDestroyed()) {
+                clearInterval(poller);
+                inspectorPollers.delete(tab.id);
+                return;
+            }
+
+            try {
+                const selection = await wc.executeJavaScript(
+                    "window.__devflowInspectorSelection || null"
+                );
+
+                if (selection) {
+                    mainWindow.webContents.send(
+                        "inspector:element-selected",
+                        { tabId: tab.id, ...selection }
+                    );
+
+                    await wc.executeJavaScript(
+                        "window.__devflowInspectorSelection = null"
+                    );
+                }
+            } catch {
+                // Page may be navigating.
+            }
+        }, 150);
+
+        inspectorPollers.set(tab.id, poller);
+
+        return { success: true };
+    } catch (error) {
+        console.error("Inspector start error:", error);
+        return { success: false, error: error.message };
+    }
+});
+
+ipcMain.handle("inspector:stop", async (event) => {
+    if (!isTrustedRenderer(event)) {
+        return { success: false, error: "Unauthorized request" };
+    }
+
+    const tab = tabs.get(activeTabId);
+    if (!tab || tab.view.webContents.isDestroyed()) {
+        return { success: false, error: "No active browser tab" };
+    }
+
+    const poller = inspectorPollers.get(tab.id);
+    if (poller) clearInterval(poller);
+    inspectorPollers.delete(tab.id);
+
+    try {
+        await tab.view.webContents.executeJavaScript(
+            "window.__devflowInspectorCleanup?.()"
+        );
+
+        return { success: true };
+    } catch (error) {
+        return { success: false, error: error.message };
+    }
+});
+
+
+ipcMain.on("tools:open-menu", (event, point) => {
+    if (!isTrustedRenderer(event) || !mainWindow || mainWindow.isDestroyed()) return;
+
+    if (!toolsWindow || toolsWindow.isDestroyed()) createToolsMenuWindow();
+
+    const cursorPoint = point && Number.isFinite(point.x) && Number.isFinite(point.y)
+        ? point
+        : screen.getCursorScreenPoint();
+    const workArea = screen.getDisplayNearestPoint(cursorPoint).workArea;
+    const width = 250;
+    const height = 480;
+    const x = Math.max(workArea.x, Math.min(cursorPoint.x - 12, workArea.x + workArea.width - width));
+    const y = Math.max(workArea.y, Math.min(cursorPoint.y + 14, workArea.y + workArea.height - height));
+
+    toolsWindowRequested = true;
+    toolsWindow.setBounds({ x, y, width, height });
+    if (toolsWindowReady) {
+        toolsWindow.show();
+        toolsWindow.focus();
+    }
+});
+
+ipcMain.on("tools:select", (event, toolId) => {
+    if (!toolsWindow || event.sender !== toolsWindow.webContents) return;
+
+    const validTools = [
+        "",
+        "bookmarks",
+        "history",
+        "api",
+        "developer",
+        "network",
+        "downloads",
+        "settings",
+        "responsive",
+        "private-tab",
+        "inspector"
+    ];
+    if (!validTools.includes(toolId)) return;
+
+    if (toolId === "private-tab") {
+        createTab("https://www.google.com", true);
+    } else if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send("tools:selected", toolId);
+    }
+
+    hideToolsMenu();
+});
+
+ipcMain.on("tools:close-menu", (event) => {
+    if (toolsWindow && event.sender === toolsWindow.webContents) {
+        hideToolsMenu();
+    }
+});
+
+function createToolsMenuWindow() {
+    toolsWindowReady = false;
+    toolsWindow = new BrowserWindow({
+        width: 250,
+        height: 480,
+        parent: mainWindow,
+        frame: false,
+        transparent: false,
+        resizable: false,
+        minimizable: false,
+        maximizable: false,
+        show: false,
+        skipTaskbar: true,
+        backgroundColor: "#252231",
+        webPreferences: {
+            preload: path.join(__dirname, "tools-menu-preload.cjs"),
+            contextIsolation: true,
+            nodeIntegration: false,
+            sandbox: true
+        }
+    });
+
+    const currentToolsWindow = toolsWindow;
+    currentToolsWindow.on("blur", hideToolsMenu);
+    currentToolsWindow.on("closed", () => {
+        if (toolsWindow === currentToolsWindow) {
+            toolsWindow = null;
+            toolsWindowReady = false;
+        }
+    });
+    currentToolsWindow.once("ready-to-show", () => {
+        toolsWindowReady = true;
+        if (toolsWindowRequested && !currentToolsWindow.isDestroyed()) {
+            currentToolsWindow.show();
+            currentToolsWindow.focus();
+        }
+    });
+    currentToolsWindow.loadFile(path.join(__dirname, "tools-menu.html"));
+}
+
+function hideToolsMenu() {
+    toolsWindowRequested = false;
+    if (toolsWindow && !toolsWindow.isDestroyed() && toolsWindow.isVisible()) {
+        toolsWindow.hide();
+    }
+}
 
 function isTrustedRenderer(event) {
     return !!mainWindow &&

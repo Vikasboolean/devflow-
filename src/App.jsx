@@ -6,6 +6,8 @@ import DeveloperConsole from "./DeveloperConsole";
 import NetworkMonitor from "./NetworkMonitor";
 import DownloadManager from "./DownloadManager";
 import BrowserSettings from "./BrowserSettings";
+import ResponsiveDesignMode from "./ResponsiveDesignMode";
+import ElementInspector from "./ElementInspector";
 
 function App() {
   const [url, setUrl] = useState("");
@@ -14,6 +16,7 @@ function App() {
   const activeTab = tabs.find((tab) => tab.id === activeTabId);
   const activeError = activeTab?.loadError;
   const viewportRef = useRef(null);
+  const responsivePreviewRef = useRef(null);
   const [bookmarks, setBookmarks] = useState([]);
   const [history, setHistory] = useState([]);
   const [panel, setPanel] = useState("");
@@ -74,21 +77,42 @@ function App() {
     return unsubscribe;
   }, []);
 
+  useEffect(() => window.browserAPI.onToolSelected((toolId) => {
+    if (toolId === "private-tab") {
+      window.browserAPI.createPrivateTab("https://www.google.com");
+      return;
+    }
+    setPanel(toolId);
+    if (toolId === "bookmarks") loadBookmarks();
+    if (toolId === "history") loadHistory();
+  }), []);
+
   useEffect(() => {
     const viewport = viewportRef.current;
+    const active = tabs.find((tab) => tab.id === activeTabId);
+    const showBrowserView =
+      (panel === "" || panel === "responsive") && !active?.loadError;
+
+    // Responsive mode owns its own preview bounds, so the normal viewport
+    // ref is intentionally absent while that panel is mounted.
+    if (panel === "responsive") {
+      window.browserAPI.setViewVisible(showBrowserView);
+      return;
+    }
 
     if (!viewport) {
       window.browserAPI.setViewVisible(false);
       return;
     }
 
-    const active = tabs.find((tab) => tab.id === activeTabId);
-    const showBrowserView = panel === "" && !active?.loadError;
-
     window.browserAPI.setViewVisible(showBrowserView);
 
     const updateBounds = () => {
       const rect = viewport.getBoundingClientRect();
+
+      console.log(
+        `DEVFLOW VIEWPORT: x=${rect.left}, y=${rect.top}, width=${rect.width}, height=${rect.height}, windowHeight=${window.innerHeight}`
+      );
 
       window.browserAPI.resize({
         x: rect.left,
@@ -158,10 +182,6 @@ function App() {
 
   const addTab = () => {
     window.browserAPI.createTab("https://www.google.com");
-  };
-
-  const addPrivateTab = () => {
-    window.browserAPI.createPrivateTab("https://www.google.com");
   };
 
   const selectTab = (id) => {
@@ -237,6 +257,14 @@ function App() {
       </header>
 
       <div className="tabbar">
+        <button
+          className={`tools-menu-trigger ${panel !== "" ? "selected" : ""}`}
+          title="DevFlow Tools"
+          onMouseEnter={(event) => window.browserAPI.openToolsMenu({ x: event.screenX, y: event.screenY })}
+          onClick={(event) => window.browserAPI.openToolsMenu({ x: event.screenX, y: event.screenY })}
+        >
+          <span>&#9776;</span>
+        </button>
         {tabs.map((tab) => (
           <div
             key={tab.id}
@@ -264,87 +292,13 @@ function App() {
           +
         </button>
 
-        <button
-          className="private-tab-btn"
-          onClick={addPrivateTab}
-          title="New Private Tab"
-        >
-          ◉ Private
-        </button>
 
-        <button className="bookmark-btn" onClick={saveBookmark}>
-          ☆
-        </button>
 
 
       </div>
 
       <main className="workspace">
 
-        <aside className="navigation-rail">
-          <div className="rail-brand">D</div>
-
-          <div className="rail-menu">
-            <button title="Home" onClick={() => setPanel("")}>⌂</button>
-            <button title="Bookmarks" onClick={() => {
-              setPanel("bookmarks");
-              loadBookmarks();
-            }}>☆</button>
-            <button title="History" onClick={() => {
-              setPanel("history");
-              loadHistory();
-            }}>◷</button>
-            <button title="API Testing" onClick={() => setPanel("api")}>⌘</button>
-            <button title="Developer Tools" onClick={() => setPanel("developer")}>⌘</button>
-            <button title="Network Monitor" onClick={() => setPanel("network")}>⇄</button>
-            <button title="Downloads" onClick={() => setPanel("downloads")}>↓</button>
-          </div>
-
-          <div className="rail-bottom">
-            <button title="Settings" onClick={() => setPanel("settings")}>⚙</button>
-          </div>
-        </aside>
-
-
-        <aside className="sidebar">
-          <button onClick={() => setPanel("")}>⌂ Home</button>
-
-          <button onClick={() => {
-            setPanel("bookmarks");
-            loadBookmarks();
-          }}>
-            ☆ Bookmarks
-          </button>
-
-          <button onClick={() => {
-            setPanel("history");
-            loadHistory();
-          }}>
-            ◷ History
-          </button>
-
-          <button onClick={() =>
-            setPanel("api")}>
-            ⌘ API Testing
-          </button>
-
-          <button>◈ Workspaces</button>
-          <button onClick={() => setPanel("developer")}>
-            ⌘ Developer Tools
-          </button>
-
-          <button onClick={() => setPanel("network")}>
-            ⇄ Network Monitor
-          </button>
-
-          <button onClick={() => setPanel("downloads")}>
-            ↓ Download Manager
-          </button>
-
-          <button onClick={() => setPanel("settings")}>
-            ⚙ Settings
-          </button>
-        </aside>
 
         <section className="content">
           {panel === "" && (
@@ -386,6 +340,10 @@ function App() {
 
           {panel === "network" && (
             <NetworkMonitor activeTabId={activeTabId} />
+          )}
+
+          {panel === "inspector" && (
+            <ElementInspector activeTabId={activeTabId} />
           )}
 
           {panel === "downloads" && (
@@ -455,6 +413,12 @@ function App() {
           )}
 
           {panel === "api" && <ApiTester />}
+          {panel === "responsive" && (
+            <ResponsiveDesignMode
+              activeTabId={activeTabId}
+              previewRef={responsivePreviewRef}
+            />
+          )}
 
           {panel === "settings" && (
             <BrowserSettings

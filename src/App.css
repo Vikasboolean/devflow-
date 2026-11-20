@@ -1,4 +1,3 @@
-
 * {
   margin: 0;
   padding: 0;
@@ -107,8 +106,11 @@ button {
   align-items: center;
   gap: 5px;
   padding: 4px 12px;
-  background: #101114;
+  background: #182752;
   border-bottom: 1px solid #303238;
+  position: relative;
+  z-index: 1000;
+  overflow: visible;
   overflow-x: auto;
   overflow-y: hidden;
 }
@@ -122,8 +124,8 @@ button {
   align-items: center;
   gap: 8px;
   padding: 0 10px;
-  background: #202229;
-  color: #aaa;
+  background: #757576;
+  color: #1a1a2b;
   border-radius: 7px 7px 0 0;
   cursor: pointer;
 }
@@ -171,6 +173,7 @@ button {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+  flex-direction: row;
 }
 
 .sidebar {
@@ -358,7 +361,7 @@ button {
   padding: 16px 8px;
   gap: 22px;
   background: #211e2d;
-  border-right: 1px solid rgba(255,255,255,0.06);
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .rail-brand {
@@ -404,4 +407,22 @@ button {
 
 .rail-bottom {
   margin-top: auto;
+}
+
+/* DEVFLOW HOVER TOOLS MENU */
+
+.tools-menu-trigger {
+  width: 36px;
+  height: 34px;
+  padding: 0;
+  border-radius: 9px;
+  background: #292c33;
+  color: #c5bfd0;
+  font-size: 23px;
+}
+
+.tools-menu-trigger:hover,
+.tools-menu-trigger.selected {
+  background: #2563eb;
+  color: white;
 }

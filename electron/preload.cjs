@@ -12,6 +12,14 @@ contextBridge.exposeInMainWorld("browserAPI", {
   setViewVisible: (visible) =>
     ipcRenderer.send("browser:set-visible", visible),
 
+  openToolsMenu: (point) => ipcRenderer.send("tools:open-menu", point),
+
+  onToolSelected: (callback) => {
+    const listener = (_, toolId) => callback(toolId);
+    ipcRenderer.on("tools:selected", listener);
+    return () => ipcRenderer.removeListener("tools:selected", listener);
+  },
+
   createTab: (url) =>
     ipcRenderer.invoke("browser:create-tab", url),
 
@@ -154,5 +162,30 @@ contextBridge.exposeInMainWorld("browserAPI", {
 
     return () =>
       ipcRenderer.removeListener("downloads:updated", listener);
+  },
+
+  // Responsive Design Mode
+  setResponsiveMode: (settings) =>
+    ipcRenderer.invoke("browser:responsive-mode", settings),
+
+  resetResponsiveMode: () =>
+    ipcRenderer.invoke("browser:responsive-reset"),
+
+  // Element Inspector
+  startElementInspection: () =>
+    ipcRenderer.invoke("inspector:start"),
+
+  stopElementInspection: () =>
+    ipcRenderer.invoke("inspector:stop"),
+
+  onElementSelected: (callback) => {
+    if (typeof callback !== "function") return () => {};
+
+    const listener = (_, data) => callback(data);
+
+    ipcRenderer.on("inspector:element-selected", listener);
+
+    return () =>
+      ipcRenderer.removeListener("inspector:element-selected", listener);
   }
 });
