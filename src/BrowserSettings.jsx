@@ -1,6 +1,7 @@
 
 import { useEffect, useState } from "react";
 import "./BrowserSettings.css";
+import { showToast } from "./toast";
 
 function BrowserSettings({ onSearchEngineChange, onThemeChange }) {
   const [settings, setSettings] = useState({
@@ -8,7 +9,9 @@ function BrowserSettings({ onSearchEngineChange, onThemeChange }) {
     homepage: "https://www.google.com",
     startupBehavior: "homepage",
     theme: "dark",
-    downloadLocation: ""
+    downloadLocation: "",
+    openPopupsInNewTabs: true,
+    downloadNotifications: true
   });
 
   const [loading, setLoading] = useState(true);
@@ -49,8 +52,10 @@ function BrowserSettings({ onSearchEngineChange, onThemeChange }) {
         onThemeChange?.(result.settings?.theme || "dark");
         onSearchEngineChange?.(result.settings?.searchEngine || "google");
         setMessage("Settings saved successfully!");
+        showToast("Settings saved", "success");
       } else {
         setMessage(result?.error || "Could not save settings.");
+        showToast(result?.error || "Could not save settings", "error");
       }
     } catch (error) {
       console.error("Settings save error:", error);
@@ -73,35 +78,26 @@ function BrowserSettings({ onSearchEngineChange, onThemeChange }) {
 
       <section className="settings-section">
         <h3>General</h3>
-
-        <div className="setting-item">
-          <label>Homepage URL</label>
-          <input
-            value={settings.homepage}
-            onChange={(e) => updateField("homepage", e.target.value)}
-            placeholder="https://www.google.com"
-          />
-        </div>
-
-        <div className="setting-item">
-          <label>Startup Behavior</label>
-          <select
-            value={settings.startupBehavior}
-            onChange={(e) => updateField("startupBehavior", e.target.value)}
-          >
-            <option value="homepage">Open Homepage</option>
-            <option value="newtab">Open New Tab</option>
-            <option value="continue">Continue Previous Session</option>
-          </select>
-        </div>
+        <p>Choose how DevFlow opens and restores browser sessions.</p>
       </section>
 
       <section className="settings-section">
-        <h3>Search Engine</h3>
+        <h3>Homepage</h3>
+        <div className="setting-item"><label htmlFor="homepage-setting">Homepage URL</label><input id="homepage-setting" value={settings.homepage} onChange={(e) => updateField("homepage", e.target.value)} placeholder="https://www.google.com" /></div>
+      </section>
+
+      <section className="settings-section">
+        <h3>Startup</h3>
+        <div className="setting-item"><label htmlFor="startup-setting">When DevFlow starts</label><select id="startup-setting" value={settings.startupBehavior} onChange={(e) => updateField("startupBehavior", e.target.value)}><option value="homepage">Open Homepage</option><option value="newtab">Open New Tab</option><option value="continue">Continue Previous Session</option></select></div>
+      </section>
+
+      <section className="settings-section">
+        <h3>Search</h3>
 
         <div className="setting-item">
-          <label>Default Search Engine</label>
+            <label htmlFor="search-engine-setting">Default Search Engine</label>
           <select
+              id="search-engine-setting"
             value={settings.searchEngine}
             onChange={(e) => updateField("searchEngine", e.target.value)}
           >
@@ -138,6 +134,17 @@ function BrowserSettings({ onSearchEngineChange, onThemeChange }) {
             placeholder="Default Downloads folder"
           />
           <small>Folder selection will be added in the next step.</small>
+        </div>
+        <div className="setting-item setting-checkbox">
+          <label><input type="checkbox" checked={settings.downloadNotifications !== false} onChange={e => updateField("downloadNotifications", e.target.checked)} /> Show download completion notifications</label>
+        </div>
+      </section>
+
+      <section className="settings-section">
+        <h3>Popups</h3>
+        <div className="setting-item setting-checkbox">
+          <label><input type="checkbox" checked={settings.openPopupsInNewTabs !== false} onChange={e => updateField("openPopupsInNewTabs", e.target.checked)} /> Open allowed popups in a new tab</label>
+          <small>Turn this off to block popup windows opened by websites.</small>
         </div>
       </section>
 

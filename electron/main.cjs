@@ -7,7 +7,9 @@ const {
     ipcMain,
     safeStorage,
     session,
-    shell
+    shell,
+    net,
+    dialog
 } = require("electron");
 
 const path = require("path");
@@ -17,6 +19,7 @@ let mainWindow;
 let toolsWindow = null;
 let toolsWindowReady = false;
 let toolsWindowRequested = false;
+let activeTool = "";
 let tabs = new Map();
 let activeTabId = null;
 let responsiveModeActive = false;
@@ -29,10 +32,15 @@ let viewBounds = {
 };
 let networkMonitoringInitialized = false;
 const networkRequests = new Map();
+const blockedRequestUrls = new Set();
 const MAX_NETWORK_REQUESTS = 500;
 // Download Manager
 const downloads = new Map();
 const MAX_DOWNLOAD_HISTORY = 200;
+const NEW_TAB_URL = "devflow://newtab";
+const closedTabs = [];
+const privatePermissionDecisions = new Map();
+const SUPPORTED_SITE_PERMISSIONS = new Set(["media", "geolocation", "notifications", "clipboard-read", "clipboard-sanitized-write"]);
 
 function isSafeUrl(value) {
     try {
@@ -60,12 +68,13 @@ function saveCurrentHistory(tab) {
 
 
 function getTabData() {
-    return [...tabs.values()].map((tab) => ({
+    return [...tabs.values()].sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned))).map((tab) => ({
         id: tab.id,
         title: tab.title,
         url: tab.url,
         loading: tab.loading,
         isPrivate: tab.isPrivate || false,
+        pinned: Boolean(tab.pinned),
         loadError: tab.loadError || null
     }));
 }
@@ -641,6 +650,7 @@ function setupDownloadManager() {
                 }
 
                 if (title) {
+                    if (database.getSettings().downloadNotifications === false) return;
                     const notification = new Notification({
                         title,
                         body,
@@ -672,6 +682,10 @@ function setupNetworkMonitoring() {
     webRequest.onBeforeRequest(
         { urls: ["<all_urls>"] },
         (details, callback) => {
+            if (blockedRequestUrls.has(details.url)) {
+                callback({ cancel: true });
+                return;
+            }
             const tabId = getTabIdFromWebContents(details.webContentsId);
 
             if (tabId) {
@@ -802,9 +816,13 @@ function setupNetworkMonitoring() {
 function publishConsoleMessage(tab, message) {
     if (!mainWindow || mainWindow.isDestroyed()) return;
 
+    const level = typeof message.level === "number"
+        ? ({ 0: "log", 1: "warning", 2: "error", 3: "verbose" }[message.level] || "log")
+        : String(message.level || "log").toLowerCase();
+
     mainWindow.webContents.send("browser:console-message", {
         tabId: tab.id,
-        level: message.level,
+        level,
         message: String(message.message || "").slice(0, 10000),
         source: String(message.sourceId || "").slice(0, 2000),
         lineNumber: Number(message.lineNumber) || 0,
@@ -830,7 +848,7 @@ function createTab(url = null, isPrivate = false) {
         ? settings.homepage
         : "https://www.google.com";
 
-    const targetUrl = isSafeUrl(url) ? url : homepage;
+    const targetUrl = url === NEW_TAB_URL || url === null ? NEW_TAB_URL : (isSafeUrl(url) ? url : homepage);
 
     const id = randomUUID();
     const view = new WebContentsView({
@@ -847,11 +865,13 @@ function createTab(url = null, isPrivate = false) {
         view,
         title: "New Tab",
         url: targetUrl,
-        loading: true,
-        isPrivate
+        loading: targetUrl !== NEW_TAB_URL,
+        isPrivate,
+        pinned: false
     };
 
     tabs.set(id, tab);
+    if (isPrivate) configurePermissionSession(session.fromPartition("incognito"), true);
     attachResponsePreview(tab.view.webContents, id);
 
     if (activeTabId) {
@@ -878,8 +898,10 @@ function createTab(url = null, isPrivate = false) {
     });
 
     wc.setWindowOpenHandler(({ url }) => {
-        if (isSafeUrl(url)) {
+        if (isSafeUrl(url) && database.getSettings().openPopupsInNewTabs !== false) {
             createTab(url, isPrivate);
+        } else if (isSafeUrl(url) && mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send("browser:popup-blocked", { tabId: tab.id, origin: new URL(url).origin });
         }
 
         return { action: "deny" };
@@ -942,12 +964,45 @@ function createTab(url = null, isPrivate = false) {
         publishTabs();
     });
 
-    wc.loadURL(targetUrl).catch((error) => {
-        console.error("Page loading error:", error);
-    });
+    if (targetUrl !== NEW_TAB_URL) wc.loadURL(targetUrl).catch((error) => console.error("Page loading error:", error));
 
     publishTabs();
     return id;
+}
+
+function configurePermissionSession(targetSession, isPrivate = false) {
+    if (targetSession.__devflowPermissionsConfigured) return;
+    targetSession.__devflowPermissionsConfigured = true;
+    const resolve = (origin, permission) => {
+        if (!SUPPORTED_SITE_PERMISSIONS.has(permission)) return "denied";
+        if (isPrivate) return privatePermissionDecisions.get(`${origin}|${permission}`) || "ask";
+        return database.getWebsitePermissions().find(item => item.origin === origin && item.permission === permission)?.decision || "ask";
+    };
+    targetSession.setPermissionCheckHandler((_wc, permission, requestingOrigin) => resolve(requestingOrigin, permission) === "granted");
+    targetSession.setPermissionRequestHandler(async (wc, permission, callback, details) => {
+        const requestingUrl = details?.requestingUrl || wc.getURL();
+        let origin;
+        try { origin = new URL(requestingUrl).origin; } catch { callback(false); return; }
+        const decision = resolve(origin, permission);
+        if (decision !== "ask") { callback(decision === "granted"); return; }
+        if (!SUPPORTED_SITE_PERMISSIONS.has(permission) || !mainWindow || mainWindow.isDestroyed()) { callback(false); return; }
+        let result;
+        try { result = await dialog.showMessageBox(mainWindow, {
+            type: "question",
+            title: "Website permission request",
+            message: `${origin} wants to access ${permission}.`,
+            detail: isPrivate ? "Private session: this choice will not be saved." : "Choose Allow to grant this permission for this site. You can change it later in Site Permissions.",
+            buttons: ["Deny", "Allow"],
+            defaultId: 0,
+            cancelId: 0,
+            noLink: true
+        }); } catch { callback(false); return; }
+        const chosen = result.response === 1 ? "granted" : "denied";
+        if (isPrivate) privatePermissionDecisions.set(`${origin}|${permission}`, chosen);
+        else database.setWebsitePermission(origin, permission, chosen);
+        callback(chosen === "granted");
+        if (!isPrivate) mainWindow.webContents.send("permissions:updated", database.getWebsitePermissions());
+    });
 }
 
 function switchTab(id) {
@@ -972,8 +1027,26 @@ async function closeTab(id) {
     const tab = tabs.get(id);
     if (!tab) return;
 
+    const activeTabDownloads = [...downloads.values()].filter(item => item.tabId === id && ["progressing", "paused"].includes(item.state));
+    if (activeTabDownloads.length && mainWindow && !mainWindow.isDestroyed()) {
+        const confirmation = await dialog.showMessageBox(mainWindow, {
+            type: "warning",
+            message: "This tab has active downloads.",
+            detail: "Closing the tab will not cancel them. Continue?",
+            buttons: ["Keep tab open", "Close tab"],
+            defaultId: 0,
+            cancelId: 0,
+            noLink: true
+        });
+        if (confirmation.response !== 1) return;
+    }
+
     const wasActive = activeTabId === id;
     const wasPrivate = tab.isPrivate;
+    if (!wasPrivate && isSafeUrl(tab.url)) {
+        closedTabs.unshift({ url: tab.url, title: tab.title });
+        closedTabs.splice(10);
+    }
 
     if (wasActive) {
         mainWindow.contentView.removeChildView(tab.view);
@@ -989,6 +1062,7 @@ async function closeTab(id) {
         );
 
         if (!hasPrivateTabs) {
+            privatePermissionDecisions.clear();
             try {
                 const privateSession = session.fromPartition("incognito");
 
@@ -1017,6 +1091,7 @@ async function closeTab(id) {
 
 
 function createWindow() {
+    configurePermissionSession(session.defaultSession, false);
     mainWindow = new BrowserWindow({
         width: 1440,
         height: 900,
@@ -1044,7 +1119,7 @@ function createWindow() {
         const openTabs = Array.from(tabs.values())
             .filter(tab => !tab.isPrivate)
             .map(tab => tab.url)
-            .filter(url => isSafeUrl(url));
+            .filter(url => isSafeUrl(url) || url === NEW_TAB_URL);
 
         database.updateSettings({
             lastSession: openTabs
@@ -1091,12 +1166,12 @@ function createWindow() {
         settings.lastSession.length > 0
     ) {
         settings.lastSession.forEach(url => {
-            if (isSafeUrl(url)) {
+            if (isSafeUrl(url) || url === NEW_TAB_URL) {
                 createTab(url);
             }
         });
     } else if (settings.startupBehavior === "newtab") {
-        createTab("https://www.google.com");
+        createTab(NEW_TAB_URL);
     } else {
         const homepage = isSafeUrl(settings.homepage)
             ? settings.homepage
@@ -1135,8 +1210,49 @@ function decryptAuthConfig(encrypted) {
 
 // Browser IPC
 
-ipcMain.handle("browser:create-tab", (_, url) => {
-    return createTab(isSafeUrl(url) ? url : "https://www.google.com");
+ipcMain.handle("browser:create-tab", (event, url) => {
+    if (!isTrustedRenderer(event)) return { success: false, error: "Unauthorized request" };
+    return createTab(url == null ? NEW_TAB_URL : (isSafeUrl(url) ? url : NEW_TAB_URL));
+});
+
+ipcMain.handle("browser:duplicate-tab", (event, id) => {
+    if (!isTrustedRenderer(event) || typeof id !== "string") return { success: false, error: "Invalid tab" };
+    const tab = tabs.get(id);
+    if (!tab) return { success: false, error: "Tab no longer exists" };
+    return { success: true, id: createTab(tab.url === NEW_TAB_URL ? NEW_TAB_URL : tab.url, tab.isPrivate) };
+});
+
+ipcMain.handle("browser:reopen-closed-tab", (event) => {
+    if (!isTrustedRenderer(event)) return { success: false, error: "Unauthorized request" };
+    const item = closedTabs.shift();
+    return item ? { success: true, id: createTab(item.url) } : { success: false, error: "No recently closed tab" };
+});
+
+ipcMain.handle("browser:set-tab-pinned", (event, data) => {
+    if (!isTrustedRenderer(event) || !data || typeof data.id !== "string" || typeof data.pinned !== "boolean") return { success: false, error: "Invalid pin request" };
+    const tab = tabs.get(data.id);
+    if (!tab) return { success: false, error: "Tab no longer exists" };
+    tab.pinned = data.pinned;
+    publishTabs();
+    return { success: true };
+});
+
+ipcMain.handle("browser:search-suggestions", async (event, data) => {
+    if (!isTrustedRenderer(event) || !data || typeof data.query !== "string" || data.query.length > 100 || !["google", "bing", "duckduckgo"].includes(data.engine)) return { success: false, error: "Invalid suggestion request", suggestions: [] };
+    const query = data.query.trim();
+    if (!query) return { success: true, suggestions: [] };
+    const endpoints = {
+        google: `https://suggestqueries.google.com/complete/search?client=firefox&q=${encodeURIComponent(query)}`,
+        bing: `https://api.bing.com/osjson.aspx?query=${encodeURIComponent(query)}`,
+        duckduckgo: `https://duckduckgo.com/ac/?q=${encodeURIComponent(query)}&type=list`
+    };
+    try {
+        const response = await net.fetch(endpoints[data.engine]);
+        if (!response.ok) throw new Error("Suggestion service unavailable");
+        const body = await response.json();
+        const values = data.engine === "duckduckgo" ? body.map(item => item.phrase) : body[1];
+        return { success: true, suggestions: (Array.isArray(values) ? values : []).filter(value => typeof value === "string").slice(0, 8) };
+    } catch { return { success: false, suggestions: [], error: "Search suggestions are unavailable." }; }
 });
 
 ipcMain.handle("browser:create-private-tab", (_, url) => {
@@ -1194,6 +1310,21 @@ ipcMain.handle("browser:get-tabs", () => ({
     activeTabId
 }));
 
+ipcMain.handle("permissions:get", (event) => {
+    if (!isTrustedRenderer(event)) return { success: false, error: "Unauthorized request", permissions: [] };
+    return { success: true, permissions: database.getWebsitePermissions() };
+});
+
+ipcMain.handle("permissions:set", (event, data) => {
+    if (!isTrustedRenderer(event) || !data || typeof data.origin !== "string" || typeof data.permission !== "string" || !SUPPORTED_SITE_PERMISSIONS.has(data.permission) || !["granted", "denied", "ask"].includes(data.decision)) return { success: false, error: "Invalid permission setting" };
+    let parsed;
+    try { parsed = new URL(data.origin); } catch { return { success: false, error: "Invalid website origin" }; }
+    if (!isSafeUrl(parsed.href) || parsed.origin !== data.origin || data.origin.length > 300) return { success: false, error: "Invalid website origin" };
+    if (data.decision === "ask") database.removeWebsitePermission(data.origin, data.permission);
+    else database.setWebsitePermission(data.origin, data.permission, data.decision);
+    return { success: true, permissions: database.getWebsitePermissions() };
+});
+
 // Browser Settings IPC
 
 ipcMain.handle("settings:get", (event) => {
@@ -1210,13 +1341,20 @@ ipcMain.handle("settings:update", (event, newSettings) => {
     if (!newSettings || typeof newSettings !== "object" || Array.isArray(newSettings)) {
         return { success: false, error: "Invalid settings" };
     }
+    for (const key of ["openPopupsInNewTabs", "downloadNotifications"]) {
+        if (Object.prototype.hasOwnProperty.call(newSettings, key) && typeof newSettings[key] !== "boolean") {
+            return { success: false, error: `Invalid ${key} setting` };
+        }
+    }
 
     const allowedKeys = [
         "searchEngine",
         "homepage",
         "startupBehavior",
         "theme",
-        "downloadLocation"
+        "downloadLocation",
+        "openPopupsInNewTabs",
+        "downloadNotifications"
     ];
 
     const safeSettings = {};
@@ -1229,6 +1367,11 @@ ipcMain.handle("settings:update", (event, newSettings) => {
 
     try {
         database.updateSettings(safeSettings);
+
+        if (Object.prototype.hasOwnProperty.call(safeSettings, "theme") && toolsWindow && !toolsWindow.isDestroyed()) {
+            toolsWindow.setBackgroundColor(safeSettings.theme === "light" ? "#edf0f5" : "#191b22");
+            toolsWindow.webContents.send("tools:theme", safeSettings.theme);
+        }
 
         return { success: true, settings: database.getSettings() };
     } catch (error) {
@@ -1254,6 +1397,14 @@ ipcMain.handle("browser:clear-network-requests", (_, tabId) => {
     }
 
     return true;
+});
+
+ipcMain.handle("browser:set-request-blocked", (event, data) => {
+    if (!isTrustedRenderer(event)) return { success: false, error: "Unauthorized request" };
+    if (!data || typeof data.url !== "string" || data.url.length > 4096 || typeof data.blocked !== "boolean" || !isSafeUrl(data.url)) return { success: false, error: "Invalid request blocking rule" };
+    if (data.blocked) blockedRequestUrls.add(data.url);
+    else blockedRequestUrls.delete(data.url);
+    return { success: true };
 });
 
 ipcMain.handle("browser:navigate", async (_, url) => {
@@ -1365,7 +1516,8 @@ ipcMain.handle("browser:execute-js", async (event, code) => {
     } catch (error) {
         return {
             success: false,
-            error: error.message || "JavaScript execution failed"
+            error: error.message || "JavaScript execution failed",
+            stack: String(error.stack || "").slice(0, 10000)
         };
     }
 });
@@ -1966,6 +2118,58 @@ ipcMain.handle("browser:responsive-reset", async (event) => {
 // ==========================================
 
 const inspectorPollers = new Map();
+const inspectorHistory = new Map();
+
+function getInspectorHistory(tabId) {
+    if (!inspectorHistory.has(tabId)) inspectorHistory.set(tabId, { undo: [], redo: [] });
+    return inspectorHistory.get(tabId);
+}
+
+ipcMain.handle("inspector:mutate-dom", async (event, data) => {
+    if (!isTrustedRenderer(event)) return { success: false, error: "Unauthorized request" };
+    const { operation, selector, tagName, name, value } = data || {};
+    if (typeof operation !== "string" || !["add", "duplicate", "delete", "text", "attribute", "remove-attribute", "add-class", "remove-class", "reset"].includes(operation) || (selector !== undefined && (typeof selector !== "string" || selector.length > 2000)) || (tagName !== undefined && (typeof tagName !== "string" || !/^[a-z][a-z0-9-]{0,40}$/i.test(tagName))) || (name !== undefined && (typeof name !== "string" || name.length > 100)) || (value !== undefined && (typeof value !== "string" || value.length > 20000))) return { success: false, error: "Invalid DOM operation" };
+    const tab = tabs.get(activeTabId);
+    if (!tab || tab.view.webContents.isDestroyed() || !isSafeUrl(tab.view.webContents.getURL())) return { success: false, error: "Cannot modify this page" };
+    const wc = tab.view.webContents;
+    const history = getInspectorHistory(tab.id);
+    try {
+        const before = await wc.executeJavaScript("document.body.innerHTML");
+        const result = await wc.executeJavaScript(`(() => {
+          const op=${JSON.stringify(operation)}, sel=${JSON.stringify(selector || "")}, val=${JSON.stringify(value || "")}, nm=${JSON.stringify(name || "")}, tag=${JSON.stringify(tagName || "div")};
+          const el=sel ? document.querySelector(sel) : null;
+          if (sel && !el) return {success:false,error:"Element no longer exists. Refresh the DOM tree and select it again."};
+          if (op === "add") { const n=document.createElement(tag); if (el) el.append(n); else document.body.append(n); return {success:true, selector:"body > "+tag+":last-child"}; }
+          if (op === "duplicate") { if(!el || !el.parentElement) return {success:false,error:"Select an element that has a parent."}; const n=el.cloneNode(true); el.after(n); return {success:true}; }
+          if (op === "delete") { if(!el || el===document.body || el===document.documentElement) return {success:false,error:"Cannot delete this element."}; el.remove(); return {success:true}; }
+          if (op === "text") { el.textContent=val; return {success:true}; }
+          if (op === "attribute") { if(!/^[^\\s\\"'<>/=]+$/.test(nm) || /^on/i.test(nm)) return {success:false,error:"Invalid or unsafe attribute name."}; el.setAttribute(nm,val); return {success:true}; }
+          if (op === "remove-attribute") { el.removeAttribute(nm); return {success:true}; }
+          if (op === "add-class" || op === "remove-class") { if(!val || /\\s/.test(val)) return {success:false,error:"Enter one CSS class name."}; el.classList[op === "add-class" ? "add" : "remove"](val); return {success:true}; }
+          if (op === "reset") { el.removeAttribute("style"); return {success:true}; }
+          return {success:false,error:"Unsupported DOM operation."};
+        })()`);
+        if (!result?.success) return result;
+        const after = await wc.executeJavaScript("document.body.innerHTML");
+        history.undo.push({ before, after }); if (history.undo.length > 50) history.undo.shift(); history.redo = [];
+        return result;
+    } catch (error) { return { success: false, error: error.message || "DOM operation failed" }; }
+});
+
+ipcMain.handle("inspector:history", async (event, direction) => {
+    if (!isTrustedRenderer(event)) return { success: false, error: "Unauthorized request" };
+    if (!["undo", "redo"].includes(direction)) return { success: false, error: "Invalid history action" };
+    const tab = tabs.get(activeTabId);
+    if (!tab || tab.view.webContents.isDestroyed() || !isSafeUrl(tab.view.webContents.getURL())) return { success: false, error: "Cannot access the current page" };
+    const history = getInspectorHistory(tab.id), from = history[direction], to = history[direction === "undo" ? "redo" : "undo"];
+    if (!from.length) return { success: false, error: `Nothing to ${direction}` };
+    const item = from.pop();
+    try {
+        await tab.view.webContents.executeJavaScript(`document.body.innerHTML = ${JSON.stringify(direction === "undo" ? item.before : item.after)}`);
+        to.push(item);
+        return { success: true };
+    } catch (error) { from.push(item); return { success: false, error: error.message }; }
+});
 
 ipcMain.handle("inspector:start", async (event) => {
     if (!isTrustedRenderer(event)) {
@@ -2383,6 +2587,7 @@ ipcMain.handle("inspector:select-dom-element", async (event, selector) => {
                         .slice(0, 500),
                     selector: ${JSON.stringify(selector)},
                     outerHTML: el.outerHTML.slice(0, 10000),
+                    innerHTML: el.innerHTML.slice(0, 10000),
                     attributes: Array.from(el.attributes).map(attr => ({
                         name: attr.name,
                         value: attr.value
@@ -2623,6 +2828,85 @@ ipcMain.handle("inspector:update-element-html", async (event, data) => {
 });
 
 
+// ELEMENT INSPECTOR - DELETE ELEMENT
+
+ipcMain.handle("inspector:delete-element", async (event, selector) => {
+    if (!isTrustedRenderer(event)) {
+        return { success: false, error: "Unauthorized request" };
+    }
+
+    if (
+        typeof selector !== "string" ||
+        !selector.trim() ||
+        selector.length > 2000
+    ) {
+        return { success: false, error: "Invalid selector" };
+    }
+
+    const tab = tabs.get(activeTabId);
+
+    if (!tab || tab.view.webContents.isDestroyed()) {
+        return { success: false, error: "No active browser tab" };
+    }
+
+    const wc = tab.view.webContents;
+
+    if (!isSafeUrl(wc.getURL())) {
+        return { success: false, error: "Cannot modify this page" };
+    }
+
+    try {
+        const result = await wc.executeJavaScript(`
+            (() => {
+                const el = document.querySelector(
+                    ${JSON.stringify(selector)}
+                );
+
+                if (!el) {
+                    return {
+                        success: false,
+                        error: "Element not found"
+                    };
+                }
+
+                if (
+                    el === document.body ||
+                    el === document.documentElement
+                ) {
+                    return {
+                        success: false,
+                        error: "Cannot delete the main page structure"
+                    };
+                }
+
+                const details = {
+                    tagName: el.tagName.toLowerCase(),
+                    id: el.id || "",
+                    selector: ${JSON.stringify(selector)}
+                };
+
+                el.remove();
+
+                return {
+                    success: true,
+                    message: "Element deleted successfully",
+                    element: details
+                };
+            })()
+        `);
+
+        return result;
+
+    } catch (error) {
+        return {
+            success: false,
+            error: error.message
+        };
+    }
+});
+
+
+
 
 // ELEMENT INSPECTOR - BOX MODEL
 
@@ -2816,13 +3100,14 @@ ipcMain.on("tools:open-menu", (event, point) => {
         ? point
         : screen.getCursorScreenPoint();
     const workArea = screen.getDisplayNearestPoint(cursorPoint).workArea;
-    const width = 250;
-    const height = 480;
+    const width = 270;
+    const height = 545;
     const x = Math.max(workArea.x, Math.min(cursorPoint.x - 12, workArea.x + workArea.width - width));
     const y = Math.max(workArea.y, Math.min(cursorPoint.y + 14, workArea.y + workArea.height - height));
 
     toolsWindowRequested = true;
     toolsWindow.setBounds({ x, y, width, height });
+    if (toolsWindowReady) toolsWindow.webContents.send("tools:active", activeTool);
     if (toolsWindowReady) {
         toolsWindow.show();
         toolsWindow.focus();
@@ -2843,7 +3128,8 @@ ipcMain.on("tools:select", (event, toolId) => {
         "settings",
         "responsive",
         "private-tab",
-        "inspector"
+        "inspector",
+        "permissions"
     ];
     if (!validTools.includes(toolId)) return;
 
@@ -2856,6 +3142,17 @@ ipcMain.on("tools:select", (event, toolId) => {
     hideToolsMenu();
 });
 
+ipcMain.handle("tools:get-theme", (event) => {
+    if (!toolsWindow || event.sender !== toolsWindow.webContents) return "dark";
+    return database.getSettings().theme || "dark";
+});
+
+ipcMain.on("tools:set-active", (event, toolId) => {
+    if (!isTrustedRenderer(event) || typeof toolId !== "string") return;
+    activeTool = toolId;
+    if (toolsWindow && !toolsWindow.isDestroyed()) toolsWindow.webContents.send("tools:active", activeTool);
+});
+
 ipcMain.on("tools:close-menu", (event) => {
     if (toolsWindow && event.sender === toolsWindow.webContents) {
         hideToolsMenu();
@@ -2865,8 +3162,8 @@ ipcMain.on("tools:close-menu", (event) => {
 function createToolsMenuWindow() {
     toolsWindowReady = false;
     toolsWindow = new BrowserWindow({
-        width: 250,
-        height: 480,
+        width: 270,
+        height: 545,
         parent: mainWindow,
         frame: false,
         transparent: false,
@@ -2875,7 +3172,7 @@ function createToolsMenuWindow() {
         maximizable: false,
         show: false,
         skipTaskbar: true,
-        backgroundColor: "#252231",
+        backgroundColor: database.getSettings().theme === "light" ? "#edf0f5" : "#191b22",
         webPreferences: {
             preload: path.join(__dirname, "tools-menu-preload.cjs"),
             contextIsolation: true,
@@ -2897,6 +3194,7 @@ function createToolsMenuWindow() {
         if (toolsWindowRequested && !currentToolsWindow.isDestroyed()) {
             currentToolsWindow.show();
             currentToolsWindow.focus();
+            currentToolsWindow.webContents.send("tools:active", activeTool);
         }
     });
     currentToolsWindow.loadFile(path.join(__dirname, "tools-menu.html"));

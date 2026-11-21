@@ -369,3 +369,74 @@
   color: #aab4c4;
   font-size: 12px;
 }
+
+
+/* HTML EDITOR */
+
+.html-editor-panel {
+  padding: 10px 0;
+}
+
+.html-editor-textarea {
+  width: 100%;
+  min-height: 300px;
+  resize: vertical;
+  padding: 12px;
+  margin-top: 14px;
+  border: 1px solid #383d49;
+  border-radius: 8px;
+  outline: none;
+  background: #15171c;
+  color: #a5d6ff;
+  font-family: Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre;
+  overflow: auto;
+}
+
+.html-editor-textarea:focus {
+  border-color: #3b82f6;
+}
+
+.html-editor-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.html-apply-button {
+  flex: 1;
+  background: #2563eb;
+}
+
+.html-reset-button {
+  background: #343944;
+}
+
+.html-editor-message {
+  margin-top: 12px;
+  color: #60a5fa;
+  font-size: 13px;
+}
+
+
+/* DELETE ELEMENT BUTTON */
+
+.delete-element-button {
+  background: #dc3545;
+  color: white;
+  padding: 8px 12px;
+  border-radius: 7px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.delete-element-button:hover {
+  background: #b91c1c;
+}
+
+.dom-tree-actions, .dom-tool-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.dom-edit-tools { display: grid; gap: 8px; padding: 10px 0; border-bottom: 1px solid #343944; }
+.dom-tool-row input, .dom-tool-row select { min-width: 72px; flex: 1; }
+.dom-tree-row.selected { background: rgba(59, 130, 246, .18); }

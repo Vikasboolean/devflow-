@@ -64,12 +64,25 @@ function NetworkMonitor({ activeTabId }) {
             const matchesSearch =
                 !search ||
                 request.url?.toLowerCase().includes(search.toLowerCase()) ||
-                request.method?.toLowerCase().includes(search.toLowerCase());
+                request.method?.toLowerCase().includes(search.toLowerCase()) ||
+                request.resourceType?.toLowerCase().includes(search.toLowerCase());
 
             let matchesFilter = true;
 
             if (filter === "fetch") {
                 matchesFilter = ["XHR", "Fetch"].includes(request.resourceType);
+            } else if (filter === "js") {
+                matchesFilter = request.resourceType === "Script";
+            } else if (filter === "css") {
+                matchesFilter = request.resourceType === "Stylesheet";
+            } else if (filter === "images") {
+                matchesFilter = request.resourceType === "Image";
+            } else if (filter === "fonts") {
+                matchesFilter = request.resourceType === "Font";
+            } else if (filter === "media") {
+                matchesFilter = request.resourceType === "Media";
+            } else if (filter === "other") {
+                matchesFilter = !["XHR", "Fetch", "Script", "Stylesheet", "Image", "Font", "Media", "mainFrame", "subFrame"].includes(request.resourceType);
             } else if (filter === "failed") {
                 matchesFilter =
                     request.state === "failed" || request.status === "Failed";
@@ -642,6 +655,16 @@ function NetworkMonitor({ activeTabId }) {
         }
 
         setTimeout(() => setCopyMessage(""), 2500);
+    };
+
+    const toggleRequestBlock = async () => {
+        if (!selectedRequest?.url) return;
+        const blocked = !selectedRequest.blocked;
+        const result = await window.browserAPI.setNetworkRequestBlocked(selectedRequest.url, blocked);
+        if (!result?.success) { setCopyMessage(result?.error || "Could not update block rule."); return; }
+        setRequests(previous => previous.map(item => item.url === selectedRequest.url ? { ...item, blocked } : item));
+        setSelectedRequest(previous => previous ? { ...previous, blocked } : previous);
+        setCopyMessage(blocked ? "Exact URL blocked for future requests." : "Request unblocked.");
     };
 
     const exportPerformanceReport = () => {
@@ -1530,6 +1553,12 @@ function NetworkMonitor({ activeTabId }) {
                     >
                         <option value="all">All requests</option>
                         <option value="fetch">Fetch / XHR</option>
+                        <option value="js">JavaScript</option>
+                        <option value="css">CSS</option>
+                        <option value="images">Images</option>
+                        <option value="fonts">Fonts</option>
+                        <option value="media">Media</option>
+                        <option value="other">Other</option>
                         <option value="documents">Documents</option>
                         <option value="failed">Failed</option>
                         <option value="200">Status 200</option>
@@ -1556,6 +1585,7 @@ function NetworkMonitor({ activeTabId }) {
                                 <th>Method</th>
                                 <th>Type</th>
                                 <th>URL</th>
+                                <th>Size</th>
                                 <th>Time</th>
                                 <th className="waterfall-heading">Waterfall</th>
                             </tr>
@@ -1579,6 +1609,7 @@ function NetworkMonitor({ activeTabId }) {
                                     <td>{request.method}</td>
                                     <td>{request.resourceType}</td>
                                     <td className="network-url">{request.url}</td>
+                                    <td>{formatBytes(request.transferSize ?? request.responseBody?.size)}</td>
                                     <td>
                                         {request.duration !== null && request.duration !== undefined
                                             ? `${request.duration} ms`
@@ -1621,9 +1652,11 @@ function NetworkMonitor({ activeTabId }) {
                 {selectedRequest && (
                     <div className="network-details">
                         <div className="network-detail-actions">
+                            <button onClick={() => navigator.clipboard.writeText(selectedRequest.url).then(() => setCopyMessage("URL copied."), () => setCopyMessage("Unable to copy URL."))}>Copy URL</button>
                             <button onClick={copyAsCurl}>
                                 Copy as cURL
                             </button>
+                            <button onClick={toggleRequestBlock}>{selectedRequest.blocked ? "Unblock URL" : "Block URL"}</button>
 
                             <button onClick={() => setSelectedRequest(null)}>
                                 Close
@@ -1643,6 +1676,7 @@ function NetworkMonitor({ activeTabId }) {
                                 <p><strong>Method:</strong> {selectedRequest.method}</p>
                                 <p><strong>Type:</strong> {selectedRequest.resourceType}</p>
                                 <p><strong>Duration:</strong> {selectedRequest.duration ?? "Pending"} ms</p>
+                                <p><strong>Transferred:</strong> {formatBytes(selectedRequest.transferSize ?? selectedRequest.responseBody?.size)}</p>
 
                                 <div className="network-timing">
                                     <h4>Network Timing</h4>

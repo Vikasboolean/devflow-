@@ -21,6 +21,7 @@ function DeveloperConsole({ messages = [], activeTabId, onClear, onAddMessage })
             const type =
                 level === "error" ? "error" :
                     level === "warning" ? "warning" :
+                        level === "info" ? "info" :
                         level === "debug" ? "verbose" : "log";
 
             const matchesFilter = filter === "all" || type === filter;
@@ -39,6 +40,7 @@ function DeveloperConsole({ messages = [], activeTabId, onClear, onAddMessage })
 
         if (value === "error") return "error";
         if (value === "warning") return "warning";
+        if (value === "info") return "info";
         if (value === "debug") return "verbose";
 
         return "log";
@@ -47,6 +49,7 @@ function DeveloperConsole({ messages = [], activeTabId, onClear, onAddMessage })
     const getLabel = (type) => {
         if (type === "error") return "ERROR";
         if (type === "warning") return "WARN";
+        if (type === "info") return "INFO";
         if (type === "verbose") return "VERBOSE";
         return "LOG";
     };
@@ -87,7 +90,7 @@ function DeveloperConsole({ messages = [], activeTabId, onClear, onAddMessage })
             const response = await window.browserAPI.executeJavaScript(code);
 
             if (!response.success) {
-                addConsoleEntry("error", response.error || "Execution failed");
+                addConsoleEntry("error", [response.error || "Execution failed", response.stack].filter(Boolean).join("\n"));
                 return;
             }
 
@@ -169,6 +172,7 @@ function DeveloperConsole({ messages = [], activeTabId, onClear, onAddMessage })
                 >
                     <option value="all">All messages</option>
                     <option value="log">Logs</option>
+                    <option value="info">Info</option>
                     <option value="verbose">Verbose</option>
                     <option value="warning">Warnings</option>
                     <option value="error">Errors</option>
@@ -212,6 +216,7 @@ function DeveloperConsole({ messages = [], activeTabId, onClear, onAddMessage })
                             </div>
 
                             <time>{formatTime(item.timestamp)}</time>
+                            <button className="console-copy" title="Copy message" onClick={() => navigator.clipboard.writeText([item.message, item.stack].filter(Boolean).join("\n"))}>Copy</button>
                         </div>
                     );
                 })}

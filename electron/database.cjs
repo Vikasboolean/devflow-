@@ -12,12 +12,15 @@ function emptyData() {
     apiCollections: [],
     savedRequests: [],
     downloads: [],
+    websitePermissions: [],
     settings: {
       searchEngine: "google",
       homepage: "https://www.google.com",
       startupBehavior: "homepage",
       theme: "dark",
-      downloadLocation: ""
+      downloadLocation: "",
+      openPopupsInNewTabs: true,
+      downloadNotifications: true
     },
     nextIds: {
       bookmark: 1,
@@ -47,6 +50,7 @@ function readData() {
       downloads: Array.isArray(stored.downloads)
         ? stored.downloads
         : [],
+      websitePermissions: Array.isArray(stored.websitePermissions) ? stored.websitePermissions : [],
       settings: {
         ...defaults.settings,
         ...(stored.settings || {})
@@ -159,6 +163,21 @@ module.exports = {
   clearHistory() {
     const data = readData();
     data.history = [];
+    writeData(data);
+  },
+  getWebsitePermissions: () => readData().websitePermissions,
+  setWebsitePermission(origin, permission, decision) {
+    const data = readData();
+    const index = data.websitePermissions.findIndex(item => item.origin === origin && item.permission === permission);
+    const entry = { origin, permission, decision, updatedAt: new Date().toISOString() };
+    if (index >= 0) data.websitePermissions[index] = entry;
+    else data.websitePermissions.unshift(entry);
+    writeData(data);
+    return entry;
+  },
+  removeWebsitePermission(origin, permission) {
+    const data = readData();
+    data.websitePermissions = data.websitePermissions.filter(item => item.origin !== origin || item.permission !== permission);
     writeData(data);
   },
   addCollection,

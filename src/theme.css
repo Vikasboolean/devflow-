@@ -1,0 +1,165 @@
+/* Shared DevFlow surfaces. Themes are applied by the persisted browser setting. */
+.browser {
+  --page: #111319;
+  --chrome: #191c23;
+  --surface: #1d212a;
+  --surface-raised: #252a34;
+  --surface-inset: #151820;
+  --text: #edf0f5;
+  --muted: #98a2b3;
+  --border: #303642;
+  --accent: #5798f7;
+  --accent-hover: #397fe6;
+  --danger: #df626b;
+  --success: #47b981;
+  --warning: #e6aa50;
+  color: var(--text);
+  background: var(--page);
+  color-scheme: dark;
+  font-family: Inter, "Segoe UI", system-ui, sans-serif;
+}
+
+.browser.theme-light {
+  --page: #f3f5f8;
+  --chrome: #ffffff;
+  --surface: #ffffff;
+  --surface-raised: #f1f4f8;
+  --surface-inset: #f7f9fc;
+  --text: #202938;
+  --muted: #687487;
+  --border: #d9e0e9;
+  --accent: #276fe0;
+  --accent-hover: #195fc9;
+  --danger: #c53c4d;
+  --success: #168454;
+  --warning: #a56509;
+  color-scheme: light;
+}
+
+.browser :is(.topbar,.tabbar,.sidebar,.content,.workspace,.data-panel,.inspector-workspace,.inspector-side-panel,.inspector-browser-viewport) { background:var(--chrome); color:var(--text); border-color:var(--border); }
+.browser :is(.api-container,.dev-console,.network-monitor,.download-manager,.element-inspector,.responsive-panel,.settings-panel,.site-permissions) { background:var(--page); color:var(--text); }
+.browser :is(h1,h2,h3,h4,strong,label,.network-table,.console-message-content,.inspector-row strong) { color:var(--text); }
+.browser :is(p,small,.muted,.api-heading p,.dev-console-header p,.network-header p,.download-header p,.responsive-header p,.inspector-header p,.inspector-empty p,.settings-heading p) { color:var(--muted); }
+
+.browser :is(button,.network-toolbar select,.network-toolbar input,.console-toolbar select,.console-toolbar input,.request-box input,.request-box select,.save-request-area input,.auth-fields select,.editor-section textarea,.responsive-toolbar input,.dom-tool-row input,.dom-tool-row select,.css-editor-panel input,.css-editor-panel select,.html-editor textarea,.setting-item input:not([type=checkbox]),.setting-item select,.permission-origin select) {
+  color:var(--text); background:var(--surface-raised); border:1px solid var(--border); border-radius:9px;
+  transition:background-color .16s ease,border-color .16s ease,color .16s ease,box-shadow .16s ease;
+}
+.browser :is(button:hover:not(:disabled),.network-toolbar select:hover,.network-toolbar input:hover,.console-toolbar select:hover,.console-toolbar input:hover) { border-color:color-mix(in srgb,var(--accent) 55%,var(--border)); }
+.browser :is(input,select,textarea) { accent-color:var(--accent); }
+.browser :is(.api-container,.dev-console,.network-monitor,.download-manager,.element-inspector,.responsive-panel,.settings-panel,.site-permissions) :is(input,select,textarea) { color:var(--text); background:var(--surface-raised); border-color:var(--border); }
+.browser :is(.api-container,.dev-console,.network-monitor,.element-inspector) :is(textarea,.js-code-editor,.html-editor-textarea,.inspector-html,.response-preview,.response-section pre,.network-detail-grid pre) { background:var(--surface-inset); }
+.browser :is(input,select,textarea):focus { border-color:var(--accent); box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 18%,transparent); outline:none; }
+.browser button:disabled { opacity:.55; cursor:not-allowed; }
+.browser :is(.go,.request-box button,.save-request-area button,.aggregate-export,.css-apply-button,.html-apply-button,.run-code-btn,.network-export,.settings-footer button) { background:var(--accent); border-color:var(--accent); color:#fff; }
+.browser :is(.go:hover,.request-box button:hover,.save-request-area button:hover,.aggregate-export:hover,.css-apply-button:hover,.html-apply-button:hover,.run-code-btn:hover,.network-export:hover,.settings-footer button:hover) { background:var(--accent-hover); }
+
+/* Shared panel cards and inset areas */
+.browser :is(.card,.saved-item,.api-version,.request-box,.editor-section,.response-meta,.response-body,.collections-area,.saved-request,.auth-section,.auth-fields,.response-section,.dashboard-card,.resource-analytics,.resource-size-analytics,.resource-size-row,.bottleneck-dashboard,.bottleneck-stat,.bottleneck-item,.insight-recommendation,.aggregate-report,.aggregate-score-section,.aggregate-footer>div,.aggregate-recommendation,.network-details,.network-toolbar,.network-table-wrap,.console-toolbar,.console-output,.console-footer,.console-message,.js-executor,.download-stat-card,.download-item,.download-filters button,.download-empty,.inspector-content,.inspector-empty,.dom-tree-panel,.css-editor-panel,.html-editor-panel,.box-model-panel,.permission-origin,.permission-empty,.settings-section,.responsive-toolbar) { background:var(--surface); color:var(--text); border-color:var(--border); }
+.browser :is(.api-container,.network-monitor,.dev-console,.download-manager,.element-inspector,.responsive-panel,.settings-panel,.data-panel,.site-permissions) { scrollbar-color:var(--border) var(--page); scrollbar-width:thin; }
+.browser ::-webkit-scrollbar { width:10px; height:10px; }
+.browser ::-webkit-scrollbar-track { background:var(--page); }
+.browser ::-webkit-scrollbar-thumb { background:var(--border); border:2px solid var(--page); border-radius:99px; }
+
+/* Browser shell */
+.browser .topbar { height:58px; flex-basis:58px; gap:10px; padding:0 16px; }
+.browser .brand { font-size:16px; letter-spacing:.08em; }
+.browser .navigation { gap:4px; }
+.browser .navigation button,.browser .permissions-launch,.browser .go,.browser .bookmark-action { width:34px; height:34px; min-height:34px; padding:7px; display:grid; place-items:center; border-radius:10px; }
+.browser .permissions-launch { width:auto; display:block; }
+.browser .go { width:auto; padding:7px 12px; }
+.browser .bookmark-action { background:transparent; color:var(--muted); border-color:transparent; }
+.browser .bookmark-action:hover:not(:disabled) { color:var(--accent); background:var(--surface-raised); }
+.browser .close-tab { width:25px; min-width:25px; height:25px; display:grid; place-items:center; padding:3px; border-radius:7px; }
+.browser .close-tab svg { width:14px; height:14px; }
+.browser .tab-spinner { width:12px; height:12px; flex:0 0 12px; border:1.5px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:tab-spin .8s linear infinite; }
+@keyframes tab-spin { to { transform:rotate(360deg); } }
+.browser .address-container { min-height:38px; padding:7px 11px; border-color:var(--border); background:var(--surface); border-radius:12px; }
+.browser .address { color:var(--text); }
+.browser .tabbar { flex-basis:44px; height:44px; gap:6px; padding:5px 12px; background:var(--page); }
+.browser .tab { flex:0 1 190px; min-width:100px; height:33px; background:var(--surface-raised); border:1px solid transparent; border-radius:9px 9px 5px 5px; color:var(--muted); transition:background-color .16s ease,color .16s ease,border-color .16s ease; }
+.browser .tab:hover { background:var(--surface); color:var(--text); }
+.browser .tab.active { background:var(--chrome); border-color:var(--border); border-bottom:2px solid var(--accent); color:var(--text); }
+.browser .tools-menu-trigger,.browser .new-tab,.browser .reopen-tab { border-radius:9px; color:var(--muted); background:transparent; }
+.browser .tools-menu-trigger:hover,.browser .tools-menu-trigger.selected,.browser .new-tab:hover,.browser .reopen-tab:hover { color:var(--text); background:var(--surface-raised); }
+.browser .workspace { background:var(--page); }
+.browser .data-panel { background:var(--page); }
+.browser .saved-item { border-radius:12px; }
+.browser .browser-error-page { background:var(--page); color:var(--text); }
+.browser :is(.api-container,.download-manager,.element-inspector,.settings-panel,.data-panel) { padding:clamp(16px,2.2vw,28px); }
+.browser :is(.network-header,.dev-console-header,.responsive-header) { padding:15px 20px; }
+.browser :is(.network-header h2,.dev-console-header h2,.download-header h2,.responsive-header h2,.inspector-header h2) { font-size:20px; letter-spacing:-.02em; }
+.browser :is(.api-editor,.network-detail-grid,.resource-chart,.resource-size-grid,.bottleneck-stats,.download-stats) { min-width:0; }
+.browser .network-table-wrap { max-width:100%; overflow:auto; }
+.browser .network-table { min-width:760px; }
+.browser .inspector-tabs { overflow-x:auto; }
+.browser :is(.inspector-tabs button,.network-detail-actions button,.console-toolbar button,.download-actions button) { white-space:nowrap; }
+.browser .error-actions button { color:var(--text); background:var(--surface-raised); border-color:var(--border); }
+.browser .tab-context-menu,.browser .popup-notice,.browser .search-suggestions,.browser .suggestion-error { color:var(--text); background:var(--surface); border-color:var(--border); }
+.toast-stack { position:fixed; z-index:7000; right:18px; bottom:18px; width:min(360px,calc(100vw - 36px)); display:grid; gap:8px; pointer-events:none; }
+.app-toast { display:flex; align-items:center; justify-content:space-between; gap:14px; padding:12px 14px; border:1px solid var(--border); border-left:3px solid var(--accent); border-radius:12px; background:var(--surface); color:var(--text); box-shadow:0 12px 32px #0003; font-size:13px; animation:toast-in .18s ease-out; pointer-events:auto; }
+.app-toast.success { border-left-color:var(--success); }
+.app-toast.error { border-left-color:var(--danger); }
+.app-toast.warning { border-left-color:var(--warning); }
+.app-toast button { padding:2px 6px; border:0; background:transparent; color:var(--muted); }
+@keyframes toast-in { from { opacity:0; transform:translateY(7px); } to { opacity:1; transform:translateY(0); } }
+
+/* Light surfaces for nested cards that use component-specific class names. */
+.browser.theme-light :is(.api-editor,.response-section,.collections-area,.auth-section,.editor-section,.response-meta,.saved-request,.network-table,.network-table th,.network-table td,.network-detail-grid>div,.timing-waterfall,.console-message,.console-toolbar,.console-output,.console-footer,.js-code-editor,.download-item,.download-stat-card,.download-empty,.inspector-content,.inspector-row,.dom-tree-list,.dom-tree-node,.box-model-margin,.box-model-border,.box-model-padding,.box-model-content,.responsive-header,.responsive-toolbar,.preview-info,.settings-section,.setting-item,.data-panel .saved-item,.site-permissions,.permission-origin,.permission-empty) { color:var(--text); background-color:var(--surface); border-color:var(--border); }
+.browser.theme-light :is(.collection-item,.response-body,.response-headers,.response-section pre,.inspector-html,.inspector-empty,.dom-tree-list,.dom-tree-row:hover,.dom-edit-tools,.css-editor-panel,.html-editor-panel,.html-editor-textarea,.box-model-margin,.box-model-border,.box-model-padding,.box-model-content,.inspector-tabs,.inspector-element-title,.console-empty,.network-empty,.network-table-wrap,.network-details,.network-detail-grid pre,.response-preview,.timing-waterfall,.timing-bar-track,.performance-insights,.insight-card,.largest-resources,.bottleneck-content,.slowest-request,.aggregate-coverage,.resource-chart-track,.resource-size-track,.device-placeholder,.settings-footer,.shortcut-card,.recent-pages button) { background:var(--surface-raised); color:var(--text); border-color:var(--border); }
+.browser.theme-light :is(.response-section pre,.network-detail-grid pre,.response-preview,.inspector-html,.html-editor-textarea,.js-code-editor,.editor-section textarea) { background:var(--surface-inset); color:var(--text); }
+.browser.theme-light :is(.api-version,.download-header-icon,.download-file-icon) { background:#e7f0ff; color:#245da9; }
+.browser.theme-light :is(.api-container,.network-content-scroll,.console-output,.download-list,.element-inspector,.responsive-panel,.settings-panel,.data-panel,.site-permissions) { color:var(--text); }
+.browser.theme-light :is(.api-heading p,.console-empty,.network-empty,.download-empty,.inspector-empty,.preview-info,.resource-chart-info span,.resource-size-note,.timing-row,.timing-total,.setting-item small,.permission-origin label) { color:var(--muted); }
+.browser.theme-light :is(.api-heading h1,.response-section h3,.collections-header h3,.executor-heading h3,.inspector-header h2,.inspector-content h3,.dom-tree-heading h3,.network-header h2,.network-details-heading h3,.download-header h2,.responsive-header h2,.settings-heading h2) { color:var(--text); }
+.browser.theme-light :is(.network-table tbody tr:hover,.dom-tree-row:hover,.saved-item:hover,.collection-item:hover,.download-item:hover,.slowest-request:hover) { background:var(--surface-raised); }
+.browser.theme-light .network-table tbody tr.selected { background:#e7f0ff; }
+.browser.theme-light :is(.download-status,.network-status,.insight-priority,.aggregate-priority) { color:#364458; background:#e9edf3; }
+.browser.theme-light .download-status.completed,.browser.theme-light .network-status.success { color:#176b46; background:#e4f6ec; }
+.browser.theme-light .download-status.cancelled,.browser.theme-light .download-status.interrupted,.browser.theme-light .network-status.failed { color:#a52b3d; background:#fff0f1; }
+.browser.theme-light .download-status.paused,.browser.theme-light .network-status.pending { color:#8b5a07; background:#fff5df; }
+.browser.theme-light .dom-tree-row.selected { background:#e4efff; color:#174d9e; }
+.browser.theme-light .inspector-hint { background:#e8f2ff; color:#31547f; border-color:#c9def8; }
+.browser.theme-light .insight-card.error { background:#fff0f0; }
+.browser.theme-light .insight-card.warning { background:#fff7e8; }
+.browser.theme-light .insight-card.success { background:#edfaf3; }
+.browser.theme-light .insight-card.info { background:#eef5ff; }
+.browser :is(.api-container,.network-monitor,.dev-console,.download-manager,.settings-panel,.data-panel,.site-permissions) { animation:panel-appear .16s ease-out; }
+@keyframes panel-appear { from { opacity:.82; } to { opacity:1; } }
+.browser.theme-light :is(.network-table th,.network-toolbar,.console-toolbar,.download-toolbar,.download-filters,.dom-tree-heading,.inspector-tabs,.inspector-header,.network-header,.dev-console-header,.download-header,.responsive-header,.settings-heading) { background-color:var(--chrome); border-color:var(--border); }
+.browser.theme-light :is(.network-table td,.inspector-row span,.console-message small,.network-details p,.download-meta,.download-file-url,.resource-chart-info span,.resource-size-note) { color:var(--muted); }
+.browser.theme-light :is(.inspector-error,.api-error,.download-error,.permission-error) { background:#fff0f1; color:#a52b3d; border-color:#f0c4ca; }
+.browser.theme-light :is(.inspector-hint,.console-message.info,.console-message.log) { background:#eef4fd; color:#34445c; }
+.browser.theme-light .browser-viewport,.browser.theme-light .inspector-browser-viewport { background:#fff; }
+.browser.theme-light .responsive-preview { background:#e7ebf1; }
+.browser.theme-light .device-stage { background:#e9edf3; }
+.browser.theme-light .device-placeholder { color:#465266; }
+.browser.theme-light .site-permissions { background:var(--page); }
+.browser.theme-light .new-tab-page { background:radial-gradient(ellipse at 50% 0%, #e5efff 0%, #f7f9fc 54%, #edf1f7 100%); color:#202938; }
+.browser.theme-light .new-tab-search input { color:#202938; }
+.browser.theme-light .new-tab-greeting h1 { color:#202938; }
+.browser.theme-light .new-tab-section h2,.browser.theme-light .new-tab-greeting,.browser.theme-light .new-tab-greeting p { color:#59667a; }
+.browser.theme-light .shortcut-card { color:#202938; background:#fff; border-color:var(--border); }
+.browser.theme-light .recent-pages button { color:#202938; border-color:var(--border); }
+
+@media (max-width: 900px) {
+  .browser .topbar { gap:6px; padding:0 9px; }
+  .browser .brand { font-size:13px; }
+  .browser .navigation { gap:2px; }
+  .browser .navigation button { padding:6px 8px; }
+  .browser .permissions-launch { width:34px; overflow:hidden; color:transparent; position:relative; }
+  .browser .permissions-launch::after { content:"⚙"; color:var(--text); position:absolute; inset:6px; }
+  .browser .tab { flex:0 1 145px; }
+  .browser .network-header,.browser .dev-console-header,.browser .download-header,.browser .responsive-header { padding:14px 16px; }
+  .browser .inspector-side-panel { flex-basis:350px; width:350px; }
+  .new-tab-page { padding:30px 20px 24px; }
+}
+@media (max-width: 680px) {
+  .browser .brand { display:none; }
+  .browser .inspector-side-panel { flex:1 1 0; width:auto; min-width:0; }
+  .browser .network-detail-grid { grid-template-columns:1fr; }
+  .browser .request-box { flex-wrap:wrap; }
+  .browser .request-box input { flex-basis:100%; }
+  .browser .api-editor { grid-template-columns:minmax(0,1fr); }
+  .browser .network-dashboard { grid-template-columns:repeat(2,minmax(0,1fr)); }
+}

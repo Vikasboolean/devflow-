@@ -67,6 +67,9 @@
   color: #9ca3af;
 }
 
+.setting-item.setting-checkbox label { display:flex; align-items:center; gap:10px; font-weight:500; }
+.setting-item.setting-checkbox input[type="checkbox"] { width:16px; height:16px; margin:0; padding:0; accent-color:#3b82f6; }
+
 .settings-footer {
   display: flex;
   align-items: center;
@@ -93,70 +96,4 @@
 .settings-footer span {
   color: #4ade80;
   font-size: 13px;
-}
-
-/* ==============================
-   DEVFLOW DARK THEME
-================================ */
-
-.browser.theme-dark {
-  background: #101114;
-  color: #e5e7eb;
-}
-
-.browser.theme-dark .topbar,
-.browser.theme-dark .tabbar,
-.browser.theme-dark .sidebar {
-  background: #17191f;
-  color: #e5e7eb;
-}
-
-.browser.theme-dark .content,
-.browser.theme-dark .workspace {
-  background: #101114;
-  color: #e5e7eb;
-}
-
-/* ==============================
-   DEVFLOW LIGHT THEME
-================================ */
-
-.browser.theme-light {
-  background: #f3f4f6;
-  color: #111827;
-}
-
-.browser.theme-light .topbar,
-.browser.theme-light .tabbar,
-.browser.theme-light .sidebar {
-  background: #ffffff;
-  color: #111827;
-  border-color: #d1d5db;
-}
-
-.browser.theme-light .content,
-.browser.theme-light .workspace {
-  background: #f3f4f6;
-  color: #111827;
-}
-
-.browser.theme-light .address {
-  background: #f9fafb;
-  color: #111827;
-  border-color: #d1d5db;
-}
-
-.browser.theme-light .sidebar button,
-.browser.theme-light .navigation button {
-  color: #111827;
-}
-
-.browser.theme-light .tab {
-  background: #e5e7eb;
-  color: #374151;
-}
-
-.browser.theme-light .tab.active {
-  background: #ffffff;
-  color: #111827;
 }

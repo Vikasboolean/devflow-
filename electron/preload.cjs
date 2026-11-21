@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld("browserAPI", {
     ipcRenderer.send("browser:set-visible", visible),
 
   openToolsMenu: (point) => ipcRenderer.send("tools:open-menu", point),
+  setActiveTool: (toolId) => ipcRenderer.send("tools:set-active", toolId),
 
   onToolSelected: (callback) => {
     const listener = (_, toolId) => callback(toolId);
@@ -22,6 +23,11 @@ contextBridge.exposeInMainWorld("browserAPI", {
 
   createTab: (url) =>
     ipcRenderer.invoke("browser:create-tab", url),
+
+  duplicateTab: (id) => ipcRenderer.invoke("browser:duplicate-tab", id),
+  reopenClosedTab: () => ipcRenderer.invoke("browser:reopen-closed-tab"),
+  setTabPinned: (id, pinned) => ipcRenderer.invoke("browser:set-tab-pinned", { id, pinned }),
+  getSearchSuggestions: (query, engine) => ipcRenderer.invoke("browser:search-suggestions", { query, engine }),
 
   createPrivateTab: (url) =>
     ipcRenderer.invoke("browser:create-private-tab", url),
@@ -62,6 +68,9 @@ contextBridge.exposeInMainWorld("browserAPI", {
 
   clearNetworkRequests: (tabId) =>
     ipcRenderer.invoke("browser:clear-network-requests", tabId),
+
+  setNetworkRequestBlocked: (url, blocked) =>
+    ipcRenderer.invoke("browser:set-request-blocked", { url, blocked }),
 
   onNetworkUpdated: (callback) => {
     const listener = (_, data) => callback(data);
@@ -116,6 +125,12 @@ contextBridge.exposeInMainWorld("browserAPI", {
       ipcRenderer.removeListener("browser:tabs-updated", listener);
   },
 
+  onPopupBlocked: (callback) => {
+    const listener = (_, data) => callback(data);
+    ipcRenderer.on("browser:popup-blocked", listener);
+    return () => ipcRenderer.removeListener("browser:popup-blocked", listener);
+  },
+
   onWindowResize: (callback) => {
     const listener = () => callback();
     ipcRenderer.on("browser:window-resized", listener);
@@ -128,6 +143,14 @@ contextBridge.exposeInMainWorld("browserAPI", {
 
   getSettings: () =>
     ipcRenderer.invoke("settings:get"),
+
+  getWebsitePermissions: () => ipcRenderer.invoke("permissions:get"),
+  setWebsitePermission: (data) => ipcRenderer.invoke("permissions:set", data),
+  onWebsitePermissionsUpdated: (callback) => {
+    const listener = (_, data) => callback(data);
+    ipcRenderer.on("permissions:updated", listener);
+    return () => ipcRenderer.removeListener("permissions:updated", listener);
+  },
 
   updateSettings: (settings) =>
     ipcRenderer.invoke("settings:update", settings),
@@ -190,6 +213,9 @@ updateElementStyle: (selector, property, value) =>
     { selector, property, value }
   ),
 
+  deleteDOMElement: (selector) =>
+  ipcRenderer.invoke("inspector:delete-element", selector),
+
   getElementBoxModel: (selector) =>
   ipcRenderer.invoke("inspector:get-box-model", selector),
 
@@ -201,6 +227,10 @@ updateElementHTML: (selector, html) =>
     selector,
     html
   }),
+
+  mutateDOM: (data) => ipcRenderer.invoke("inspector:mutate-dom", data),
+  undoInspector: () => ipcRenderer.invoke("inspector:history", "undo"),
+  redoInspector: () => ipcRenderer.invoke("inspector:history", "redo"),
 
   onElementSelected: (callback) => {
     if (typeof callback !== "function") return () => {};

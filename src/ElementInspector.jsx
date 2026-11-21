@@ -82,6 +82,44 @@ function ElementInspector({ activeTabId }) {
   const [htmlDraft, setHtmlDraft] = useState("");
   const [htmlSaving, setHtmlSaving] = useState(false);
   const [htmlMessage, setHtmlMessage] = useState("");
+  const [newTag, setNewTag] = useState("div");
+  const [textDraft, setTextDraft] = useState("");
+  const [attributeName, setAttributeName] = useState("");
+  const [attributeValue, setAttributeValue] = useState("");
+  const [classDraft, setClassDraft] = useState("");
+
+  const runDOMOperation = async (operation, extra = {}) => {
+    if (!element?.selector && !["add"].includes(operation)) return setError("Select an element first.");
+    const result = await window.browserAPI.mutateDOM({ operation, selector: element?.selector, ...extra });
+    if (!result?.success) return setError(result?.error || "DOM change failed.");
+    setError("");
+    if (operation === "delete") { setElement(null); setBoxModel(null); }
+    else if (element?.selector) {
+      const fresh = await window.browserAPI.selectDOMElement(element.selector);
+      if (fresh?.success) { setElement(fresh); setHtmlDraft(fresh.innerHTML || ""); }
+      else { setElement(null); setError("The selected element no longer exists. Select it again from the DOM tree."); }
+    }
+    await loadDOMTree();
+  };
+
+  const historyAction = async (direction) => {
+    const result = await window.browserAPI[direction === "undo" ? "undoInspector" : "redoInspector"]();
+    if (!result?.success) setError(result?.error || `Could not ${direction}.`);
+    else { setError(""); setElement(null); await loadDOMTree(); }
+  };
+
+  useEffect(() => {
+    const onKey = (event) => {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+      if (event.key.toLowerCase() === "z" || event.key.toLowerCase() === "y") {
+        const target = event.target;
+        if (target instanceof HTMLElement && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))) return;
+        event.preventDefault(); historyAction(event.key.toLowerCase() === "z" && !event.shiftKey ? "undo" : "redo");
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [activeTabId]);
 
 
   useEffect(() => {
@@ -89,6 +127,9 @@ function ElementInspector({ activeTabId }) {
       if (data.tabId !== activeTabId) return;
 
       setElement(data);
+      setTextDraft(data.text || "");
+      setHtmlDraft(data.innerHTML || "");
+      setHtmlMessage("");
       setHtmlDraft(data.innerHTML || "");
       setHtmlMessage("");
       setActiveSection("overview");
@@ -107,6 +148,9 @@ function ElementInspector({ activeTabId }) {
 
 
   useEffect(() => {
+    setElement(null);
+    setBoxModel(null);
+    setError("");
     loadDOMTree();
   }, [activeTabId]);
 
@@ -186,6 +230,9 @@ function ElementInspector({ activeTabId }) {
         setElement(result);
         setActiveSection("overview");
 
+        setHtmlDraft(result.innerHTML || "");
+        setHtmlMessage("");
+
         await highlightElement(node.selector);
         await loadBoxModel(node.selector);
       } else {
@@ -239,6 +286,91 @@ function ElementInspector({ activeTabId }) {
       setCssSaving(false);
     }
   };
+
+
+
+  const applyHTMLChanges = async () => {
+    if (!element?.selector) {
+      setHtmlMessage("Select an element first.");
+      return;
+    }
+
+    setHtmlSaving(true);
+    setHtmlMessage("");
+
+    try {
+      const result = await window.browserAPI.updateElementHTML(
+        element.selector,
+        htmlDraft
+      );
+
+      if (!result?.success) {
+        setHtmlMessage(result?.error || "HTML update failed.");
+        return;
+      }
+
+      const refreshed = await window.browserAPI.selectDOMElement(
+        element.selector
+      );
+
+      if (refreshed?.success) {
+        setElement(refreshed);
+        setHtmlDraft(refreshed.innerHTML || "");
+        await loadBoxModel(element.selector);
+        await highlightElement(element.selector);
+      }
+
+      setHtmlMessage("HTML updated successfully!");
+    } catch (err) {
+      setHtmlMessage(err.message || "HTML update failed.");
+    } finally {
+      setHtmlSaving(false);
+    }
+  };
+
+  const resetHTMLDraft = () => {
+    setHtmlDraft(element?.innerHTML || "");
+    setHtmlMessage("Editor reset to selected element's current HTML.");
+  };
+
+
+  const deleteSelectedElement = async () => {
+    if (!element?.selector) {
+      setError("Please select an element first.");
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Are you sure you want to delete <${element.tagName}>?`
+    );
+
+    if (!confirmed) return;
+
+    try {
+      const result = await window.browserAPI.deleteDOMElement(
+        element.selector
+      );
+
+      if (!result?.success) {
+        setError(result?.error || "Could not delete element.");
+        return;
+      }
+
+      setElement(null);
+      setBoxModel(null);
+      setHtmlDraft("");
+      setHtmlMessage("");
+      setError("");
+
+      await loadDOMTree();
+
+      setActiveSection("dom");
+    } catch (err) {
+      setError(err.message || "Element deletion failed.");
+    }
+  };
+
+
 
 
   const loadBoxModel = async (selector) => {
@@ -317,6 +449,13 @@ function ElementInspector({ activeTabId }) {
             <button onClick={() => copyText(element.selector)}>
               Copy Selector
             </button>
+
+            <button
+              className="delete-element-button"
+              onClick={deleteSelectedElement}
+            >
+              Delete Element
+            </button>
           </div>
 
           <nav className="inspector-tabs">
@@ -338,12 +477,35 @@ function ElementInspector({ activeTabId }) {
                 <div className="dom-tree-heading">
                   <h3>DOM Structure</h3>
 
-                  <button
-                    onClick={loadDOMTree}
-                    disabled={treeLoading}
-                  >
-                    {treeLoading ? "Loading..." : "↻ Refresh"}
-                  </button>
+                  <div className="dom-tree-actions">
+                    <button onClick={() => historyAction("undo")}>Undo</button>
+                    <button onClick={() => historyAction("redo")}>Redo</button>
+                    <button onClick={loadDOMTree} disabled={treeLoading}>{treeLoading ? "Loading..." : "↻ Refresh"}</button>
+                  </div>
+                </div>
+
+                <div className="dom-edit-tools">
+                  <div className="dom-tool-row">
+                    <select value={newTag} onChange={e => setNewTag(e.target.value)}>{["div", "span", "p", "section", "button", "ul", "li", "h2", "img"].map(tag => <option key={tag}>{tag}</option>)}</select>
+                    <button onClick={() => runDOMOperation("add", { tagName: newTag })}>Add child</button>
+                    <button disabled={!element} onClick={() => runDOMOperation("duplicate")}>Duplicate</button>
+                  </div>
+                  <div className="dom-tool-row">
+                    <input aria-label="Text content" placeholder="Text content" value={textDraft} onChange={e => setTextDraft(e.target.value)} />
+                    <button disabled={!element} onClick={() => runDOMOperation("text", { value: textDraft })}>Set text</button>
+                  </div>
+                  <div className="dom-tool-row">
+                    <input aria-label="Attribute name" placeholder="Attribute" value={attributeName} onChange={e => setAttributeName(e.target.value)} />
+                    <input aria-label="Attribute value" placeholder="Value" value={attributeValue} onChange={e => setAttributeValue(e.target.value)} />
+                    <button disabled={!element} onClick={() => runDOMOperation("attribute", { name: attributeName, value: attributeValue })}>Set</button>
+                    <button disabled={!element} onClick={() => runDOMOperation("remove-attribute", { name: attributeName })}>Remove</button>
+                  </div>
+                  <div className="dom-tool-row">
+                    <input aria-label="CSS class" placeholder="One class name" value={classDraft} onChange={e => setClassDraft(e.target.value)} />
+                    <button disabled={!element} onClick={() => runDOMOperation("add-class", { value: classDraft })}>Add class</button>
+                    <button disabled={!element} onClick={() => runDOMOperation("remove-class", { value: classDraft })}>Remove class</button>
+                    <button disabled={!element} onClick={() => runDOMOperation("reset")}>Reset inline CSS</button>
+                  </div>
                 </div>
 
                 {treeError && (
@@ -551,19 +713,53 @@ function ElementInspector({ activeTabId }) {
             )}
 
 
+
             {activeSection === "html" && (
-              <>
+              <div className="html-editor-panel">
                 <div className="inspector-html-heading">
-                  <h3>Outer HTML</h3>
-                  <button onClick={() => copyText(element.outerHTML)}>
+                  <h3>Edit HTML</h3>
+                  <button onClick={() => copyText(htmlDraft)}>
                     Copy HTML
                   </button>
                 </div>
-                <pre className="inspector-html">
-                  {element.outerHTML}
-                </pre>
-              </>
+
+                <textarea
+                  className="html-editor-textarea"
+                  value={htmlDraft}
+                  onChange={(e) => setHtmlDraft(e.target.value)}
+                  spellCheck={false}
+                  placeholder="Enter element HTML..."
+                />
+
+                <div className="html-editor-actions">
+                  <button
+                    className="html-apply-button"
+                    onClick={applyHTMLChanges}
+                    disabled={htmlSaving}
+                  >
+                    {htmlSaving ? "Applying..." : "Apply Changes"}
+                  </button>
+
+                  <button
+                    className="html-reset-button"
+                    onClick={resetHTMLDraft}
+                    disabled={htmlSaving}
+                  >
+                    Reset
+                  </button>
+                </div>
+
+                {htmlMessage && (
+                  <p className="html-editor-message">{htmlMessage}</p>
+                )}
+
+                <p className="css-editor-note">
+                  Edits replace the selected element's child HTML.
+                  Page reload may discard these changes.
+                </p>
+              </div>
             )}
+
           </div>
         </>
       )}
