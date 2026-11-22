@@ -20,7 +20,21 @@ function emptyData() {
       theme: "dark",
       downloadLocation: "",
       openPopupsInNewTabs: true,
-      downloadNotifications: true
+      downloadNotifications: true,
+      newTabBackground: {
+        enabled: false,
+        animation: "leaves",
+        speed: "normal",
+        intensity: "medium",
+        opacity: 0.58,
+        blur: 0,
+        staticBackground: "default",
+        lowPerformance: false
+      },
+      pinnedTabs: [],
+      recentlyClosedTabs: [],
+      lastSession: [],
+      lastActiveTabIndex: 0
     },
     nextIds: {
       bookmark: 1,
@@ -53,7 +67,11 @@ function readData() {
       websitePermissions: Array.isArray(stored.websitePermissions) ? stored.websitePermissions : [],
       settings: {
         ...defaults.settings,
-        ...(stored.settings || {})
+        ...(stored.settings || {}),
+        newTabBackground: {
+          ...defaults.settings.newTabBackground,
+          ...(stored.settings?.newTabBackground && typeof stored.settings.newTabBackground === "object" && !Array.isArray(stored.settings.newTabBackground) ? stored.settings.newTabBackground : {})
+        }
       }
     };
   } catch (error) {
@@ -165,6 +183,14 @@ module.exports = {
     data.history = [];
     writeData(data);
   },
+  clearHistoryBefore(timestamp) {
+    const data = readData();
+    data.history = data.history.filter(item => {
+      const visited = Date.parse(item.visited_at || "");
+      return !Number.isFinite(visited) || visited >= timestamp;
+    });
+    writeData(data);
+  },
   getWebsitePermissions: () => readData().websitePermissions,
   setWebsitePermission(origin, permission, decision) {
     const data = readData();
@@ -180,6 +206,11 @@ module.exports = {
     data.websitePermissions = data.websitePermissions.filter(item => item.origin !== origin || item.permission !== permission);
     writeData(data);
   },
+  removeWebsitePermissions(origin) {
+    const data = readData();
+    data.websitePermissions = data.websitePermissions.filter(item => item.origin !== origin);
+    writeData(data);
+  },
   addCollection,
   getCollections: () => readData().apiCollections,
   deleteCollection,
@@ -188,6 +219,9 @@ module.exports = {
     return readData().savedRequests.filter(
       (request) => request.collection_id === collectionId
     );
+  },
+  getSavedRequest(id) {
+    return readData().savedRequests.find(request => request.id === id) || null;
   },
   deleteSavedRequest(id) {
     const data = readData();
@@ -249,6 +283,16 @@ module.exports = {
   clearDownloads() {
     const data = readData();
     data.downloads = [];
+    writeData(data);
+  },
+  clearDownloadsBefore(timestamp) {
+    const data = readData();
+    data.downloads = data.downloads.filter(item => Number(item.startedAt || 0) >= timestamp);
+    writeData(data);
+  },
+  clearWebsitePermissions() {
+    const data = readData();
+    data.websitePermissions = [];
     writeData(data);
   },
 

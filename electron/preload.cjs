@@ -1,11 +1,15 @@
 
 const { contextBridge, ipcRenderer } = require("electron");
+const initialTheme = process.argv.find(argument => argument.startsWith("--devflow-theme="))?.split("=")[1] === "light" ? "light" : "dark";
 
 contextBridge.exposeInMainWorld("browserAPI", {
+  initialTheme,
   navigate: (url) => ipcRenderer.invoke("browser:navigate", url),
   back: () => ipcRenderer.invoke("browser:back"),
   forward: () => ipcRenderer.invoke("browser:forward"),
   reload: () => ipcRenderer.invoke("browser:reload"),
+  hardReload: () => ipcRenderer.invoke("browser:hard-reload"),
+  stopLoading: () => ipcRenderer.invoke("browser:stop-loading"),
 
   retryPage: () => ipcRenderer.invoke("browser:retry"),
 
@@ -25,8 +29,27 @@ contextBridge.exposeInMainWorld("browserAPI", {
     ipcRenderer.invoke("browser:create-tab", url),
 
   duplicateTab: (id) => ipcRenderer.invoke("browser:duplicate-tab", id),
+  openBlockedPopup: (data) => ipcRenderer.invoke("browser:open-blocked-popup", data),
   reopenClosedTab: () => ipcRenderer.invoke("browser:reopen-closed-tab"),
   setTabPinned: (id, pinned) => ipcRenderer.invoke("browser:set-tab-pinned", { id, pinned }),
+  closePinnedTab: (id) => ipcRenderer.invoke("browser:close-pinned-tab", id),
+  closeOtherTabs: (id) => ipcRenderer.invoke("browser:close-other-tabs", id),
+  closeTabsToRight: (id) => ipcRenderer.invoke("browser:close-tabs-right", id),
+  reloadTab: (id) => ipcRenderer.invoke("browser:reload-tab", id),
+  toggleTabMute: (id) => ipcRenderer.invoke("browser:toggle-tab-mute", id),
+  findInPage: (data) => ipcRenderer.invoke("browser:find-in-page", data),
+  stopFindInPage: (tabId) => ipcRenderer.invoke("browser:stop-find-in-page", tabId),
+  onFindResult: (callback) => {
+    const listener = (_, data) => callback(data);
+    ipcRenderer.on("browser:find-result", listener);
+    return () => ipcRenderer.removeListener("browser:find-result", listener);
+  },
+  onBrowserShortcut: (callback) => {
+    const listener = (_, action) => callback(action);
+    ipcRenderer.on("browser:shortcut", listener);
+    return () => ipcRenderer.removeListener("browser:shortcut", listener);
+  },
+  clearBrowsingData: (data) => ipcRenderer.invoke("browser:clear-data", data),
   getSearchSuggestions: (query, engine) => ipcRenderer.invoke("browser:search-suggestions", { query, engine }),
 
   createPrivateTab: (url) =>
@@ -98,6 +121,8 @@ contextBridge.exposeInMainWorld("browserAPI", {
   getSavedRequests: (collectionId) =>
     ipcRenderer.invoke("api:get-saved-requests", collectionId),
 
+  getSavedRequest: (id) => ipcRenderer.invoke("api:get-saved-request", id),
+
   deleteSavedRequest: (id) =>
     ipcRenderer.invoke("api:delete-saved-request", id),
 
@@ -146,6 +171,7 @@ contextBridge.exposeInMainWorld("browserAPI", {
 
   getWebsitePermissions: () => ipcRenderer.invoke("permissions:get"),
   setWebsitePermission: (data) => ipcRenderer.invoke("permissions:set", data),
+  resetWebsitePermissions: (origin) => ipcRenderer.invoke("permissions:reset-origin", origin),
   onWebsitePermissionsUpdated: (callback) => {
     const listener = (_, data) => callback(data);
     ipcRenderer.on("permissions:updated", listener);

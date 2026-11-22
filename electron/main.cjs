@@ -14,6 +14,7 @@ const {
 
 const path = require("path");
 const { randomUUID } = require("crypto");
+const { fileURLToPath } = require("url");
 
 let mainWindow;
 let toolsWindow = null;
@@ -24,6 +25,7 @@ let tabs = new Map();
 let activeTabId = null;
 let responsiveModeActive = false;
 let responsiveViewBounds = null;
+let sessionSaveTimer = null;
 let viewBounds = {
     x: 0,
     y: 0,
@@ -38,17 +40,93 @@ const MAX_NETWORK_REQUESTS = 500;
 const downloads = new Map();
 const MAX_DOWNLOAD_HISTORY = 200;
 const NEW_TAB_URL = "devflow://newtab";
-const closedTabs = [];
+const closedTabs = (Array.isArray(database.getSettings().recentlyClosedTabs) ? database.getSettings().recentlyClosedTabs : [])
+    .filter(item => item && isSafeUrl(item.url) && !item.isPrivate)
+    .slice(0, 10);
 const privatePermissionDecisions = new Map();
-const SUPPORTED_SITE_PERMISSIONS = new Set(["media", "geolocation", "notifications", "clipboard-read", "clipboard-sanitized-write"]);
+const SUPPORTED_SITE_PERMISSIONS = new Set(["media", "geolocation", "notifications", "clipboard-read", "clipboard-sanitized-write", "popups", "downloads"]);
 
 function isSafeUrl(value) {
     try {
+        if (typeof value !== "string" || value.length === 0 || value.length > 8192 || value !== value.trim()) return false;
         const parsed = new URL(value);
-        return ["http:", "https:"].includes(parsed.protocol);
+        return ["http:", "https:"].includes(parsed.protocol) && !parsed.username && !parsed.password;
     } catch {
         return false;
     }
+}
+
+function safeDownloadFilename(value) {
+    const raw = typeof value === "string" ? path.basename(value).replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").replace(/[ .]+$/g, "") : "";
+    if (!raw || raw === "." || raw === "..") return "download";
+    return raw.slice(0, 180);
+}
+
+function isWithinDirectory(directory, candidate) {
+    const root = path.resolve(directory);
+    const resolved = path.resolve(candidate);
+    const relative = path.relative(root, resolved);
+    return relative !== "" && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+const toolsOnlyChannels = new Set(["tools:select", "tools:close-menu", "tools:get-theme"]);
+function isTrustedToolsRenderer(event) {
+    if (!toolsWindow || toolsWindow.isDestroyed() || event.sender !== toolsWindow.webContents || event.senderFrame !== event.sender.mainFrame) return false;
+    try { return fileURLToPath(event.senderFrame.url) === path.join(__dirname, "tools-menu.html"); } catch { return false; }
+}
+function isDevFlowAppUrl(value) {
+    try {
+        const parsed = new URL(value);
+        if (!app.isPackaged) return parsed.origin === "http://localhost:5173" && parsed.pathname === "/";
+        return parsed.protocol === "file:" && fileURLToPath(parsed) === path.join(__dirname, "../dist/index.html");
+    } catch { return false; }
+}
+function secureHandle(channel, handler) {
+    ipcMain.handle(channel, (event, ...args) => {
+        const trusted = toolsOnlyChannels.has(channel) ? isTrustedToolsRenderer(event) : isTrustedRenderer(event);
+        if (!trusted) return { success: false, error: "Unauthorized request" };
+        return handler(event, ...args);
+    });
+}
+function secureOn(channel, handler) {
+    ipcMain.on(channel, (event, ...args) => {
+        const trusted = toolsOnlyChannels.has(channel) ? isTrustedToolsRenderer(event) : isTrustedRenderer(event);
+        if (!trusted) return;
+        handler(event, ...args);
+    });
+}
+
+function browserShortcutForInput(input) {
+    if (!input || input.type !== "keyDown") return null;
+    const key = String(input.key || "").toLowerCase();
+    const control = Boolean(input.control || input.meta);
+    const shift = Boolean(input.shift);
+    if (control) {
+        if (key === "t" && !shift) return "new-tab";
+        if (key === "w" && !shift) return "close-tab";
+        if (key === "t" && shift) return "reopen-tab";
+        if (key === "l" && !shift) return "focus-address";
+        if (key === "r") return shift ? "hard-reload" : "reload";
+        if (key === "f" && !shift) return "find";
+        if (key === "h" && !shift) return "history";
+        if (key === "j" && !shift) return "downloads";
+        if (key === "d" && !shift) return "bookmark";
+        if (key === "tab") return shift ? "previous-tab" : "next-tab";
+        if (/^[1-9]$/.test(key)) return `tab-${key}`;
+    }
+    if (input.alt && ["left", "arrowleft"].includes(key)) return "back";
+    if (input.alt && ["right", "arrowright"].includes(key)) return "forward";
+    if (key === "escape") return "escape";
+    return null;
+}
+
+function forwardBrowserShortcuts(webContents) {
+    webContents.on("before-input-event", (event, input) => {
+        const action = browserShortcutForInput(input);
+        if (!action || !mainWindow || mainWindow.isDestroyed()) return;
+        event.preventDefault();
+        mainWindow.webContents.send("browser:shortcut", action);
+    });
 }
 
 
@@ -75,6 +153,8 @@ function getTabData() {
         loading: tab.loading,
         isPrivate: tab.isPrivate || false,
         pinned: Boolean(tab.pinned),
+        muted: Boolean(tab.view.webContents.isAudioMuted?.()),
+        audible: Boolean(tab.audible || tab.view.webContents.isCurrentlyAudible?.()),
         loadError: tab.loadError || null
     }));
 }
@@ -84,8 +164,21 @@ function publishTabs() {
 
     mainWindow.webContents.send("browser:tabs-updated", {
         tabs: getTabData(),
-        activeTabId
+        activeTabId,
+        closedTabCount: closedTabs.length
     });
+    if (database.getSettings().startupBehavior === "continue") {
+        clearTimeout(sessionSaveTimer);
+        sessionSaveTimer = setTimeout(() => {
+            try {
+                const openTabs = [...tabs.values()].filter(tab => !tab.isPrivate && (isSafeUrl(tab.url) || tab.url === NEW_TAB_URL));
+                database.updateSettings({
+                    lastSession: openTabs.map(tab => ({ url: tab.url, title: tab.title, pinned: Boolean(tab.pinned) })),
+                    lastActiveTabIndex: openTabs.findIndex(tab => tab.id === activeTabId)
+                });
+            } catch (error) { console.error("Session snapshot save error:", error.message); }
+        }, 800);
+    }
 }
 
 
@@ -535,10 +628,44 @@ function setupDownloadManager() {
 
     downloadSession.on("will-download", (event, item, webContents) => {
 
+        if (!isSafeUrl(item.getURL())) { event.preventDefault(); return; }
+
+        const sourceUrl = webContents?.getURL() || "";
+        const sourceOrigin = isSafeUrl(sourceUrl) ? new URL(sourceUrl).origin : null;
+        const downloadDecision = sourceOrigin && database.getWebsitePermissions().find(entry => entry.origin === sourceOrigin && entry.permission === "downloads")?.decision;
+        if (downloadDecision === "denied") {
+            event.preventDefault();
+            if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("browser:popup-blocked", { tabId: getTabIdFromWebContents(webContents?.id), origin: sourceOrigin, kind: "download" });
+            return;
+        }
+        if (downloadDecision !== "granted" && sourceOrigin) {
+            if (!mainWindow || mainWindow.isDestroyed()) { event.preventDefault(); return; }
+            item.pause();
+            dialog.showMessageBox(mainWindow, {
+                type: "question",
+                title: "Allow website download?",
+                message: `${sourceOrigin} wants to download a file.`,
+                detail: item.getFilename(),
+                buttons: ["Block once", "Allow once", "Always allow", "Always block"],
+                defaultId: 0,
+                cancelId: 0,
+                noLink: true
+            }).then(result => {
+                if (result.response === 2) database.setWebsitePermission(sourceOrigin, "downloads", "granted");
+                if (result.response === 3) database.setWebsitePermission(sourceOrigin, "downloads", "denied");
+                if (result.response === 1 || result.response === 2) item.resume();
+                else item.cancel();
+                if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("permissions:updated", database.getWebsitePermissions());
+            }).catch(() => item.cancel());
+        } else if (!sourceOrigin) {
+            event.preventDefault();
+            return;
+        }
+
         // Automatically save downloads without showing Save As dialog
         const downloadsFolder = app.getPath("downloads");
 
-        const originalName = path.basename(item.getFilename());
+        const originalName = safeDownloadFilename(item.getFilename());
         const parsedName = path.parse(originalName);
 
         let savePath = path.join(downloadsFolder, originalName);
@@ -561,7 +688,7 @@ function setupDownloadManager() {
         const download = {
             id,
             item,
-            filename: item.getFilename(),
+            filename: originalName,
             url: item.getURL(),
             mimeType: item.getMimeType(),
             tabId: webContents
@@ -658,7 +785,7 @@ function setupDownloadManager() {
                     });
 
                     notification.on("click", () => {
-                        if (state === "completed" && download.filePath) {
+                        if (state === "completed" && download.filePath && isWithinDirectory(app.getPath("downloads"), download.filePath)) {
                             shell.openPath(download.filePath);
                         }
                     });
@@ -841,7 +968,7 @@ function updateActiveBounds() {
     }
 }
 
-function createTab(url = null, isPrivate = false) {
+function createTab(url = null, isPrivate = false, options = {}) {
     const settings = database.getSettings();
 
     const homepage = isSafeUrl(settings.homepage)
@@ -867,7 +994,8 @@ function createTab(url = null, isPrivate = false) {
         url: targetUrl,
         loading: targetUrl !== NEW_TAB_URL,
         isPrivate,
-        pinned: false
+        pinned: Boolean(options.pinned && !isPrivate),
+        audible: false
     };
 
     tabs.set(id, tab);
@@ -886,6 +1014,14 @@ function createTab(url = null, isPrivate = false) {
     updateActiveBounds();
 
     const wc = view.webContents;
+    forwardBrowserShortcuts(wc);
+
+    wc.on("will-navigate", (event, destination, isMainFrame) => {
+        if (isMainFrame && !isSafeUrl(destination)) event.preventDefault();
+    });
+    wc.on("will-redirect", (event, destination, isMainFrame) => {
+        if (isMainFrame && !isSafeUrl(destination)) event.preventDefault();
+    });
 
     // Capture webpage console messages
     wc.on("console-message", (event) => {
@@ -898,10 +1034,18 @@ function createTab(url = null, isPrivate = false) {
     });
 
     wc.setWindowOpenHandler(({ url }) => {
-        if (isSafeUrl(url) && database.getSettings().openPopupsInNewTabs !== false) {
+        if (!isSafeUrl(url)) return { action: "deny" };
+        const currentUrl = wc.getURL() || tab.url;
+        if (!isSafeUrl(currentUrl)) return { action: "deny" };
+        const origin = new URL(currentUrl).origin;
+        const storedDecision = isPrivate
+            ? privatePermissionDecisions.get(`${origin}|popups`)
+            : database.getWebsitePermissions().find(item => item.origin === origin && item.permission === "popups")?.decision;
+        const allowed = storedDecision ? storedDecision === "granted" : database.getSettings().openPopupsInNewTabs !== false;
+        if (allowed) {
             createTab(url, isPrivate);
-        } else if (isSafeUrl(url) && mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send("browser:popup-blocked", { tabId: tab.id, origin: new URL(url).origin });
+        } else if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send("browser:popup-blocked", { tabId: tab.id, origin, url });
         }
 
         return { action: "deny" };
@@ -910,6 +1054,21 @@ function createTab(url = null, isPrivate = false) {
     wc.on("page-title-updated", (_, title) => {
         tab.title = title || "Untitled";
         publishTabs();
+    });
+
+    wc.on("audio-state-changed", (_, state) => {
+        tab.audible = Boolean(state?.audible);
+        publishTabs();
+    });
+
+    wc.on("found-in-page", (_, result) => {
+        if (tab.findRequestId !== result.requestId || !mainWindow || mainWindow.isDestroyed()) return;
+        mainWindow.webContents.send("browser:find-result", {
+            tabId: tab.id,
+            activeMatchOrdinal: result.activeMatchOrdinal,
+            matches: result.matches,
+            finalUpdate: result.finalUpdate
+        });
     });
 
     wc.on("did-start-loading", () => {
@@ -932,7 +1091,10 @@ function createTab(url = null, isPrivate = false) {
         if (!isMainFrame) return;
 
         // Ignore aborted navigation
-        if (errorCode === -3) return;
+        if (errorCode === -3) {
+            if (!wc.isLoading()) { tab.loading = false; publishTabs(); }
+            return;
+        }
 
         tab.loading = false;
 
@@ -942,12 +1104,18 @@ function createTab(url = null, isPrivate = false) {
             url: validatedURL
         };
 
-        console.error("Page failed to load:", {
-            errorCode,
-            errorDescription,
-            url: validatedURL
-        });
+        console.error("Page failed to load:", { errorCode, errorDescription });
 
+        publishTabs();
+    });
+
+    wc.on("render-process-gone", (_, details) => {
+        tab.loading = false;
+        tab.loadError = {
+            code: "RENDER_PROCESS_GONE",
+            description: details?.reason ? `The page process exited (${details.reason}).` : "The page process exited unexpectedly.",
+            url: wc.getURL()
+        };
         publishTabs();
     });
 
@@ -964,7 +1132,11 @@ function createTab(url = null, isPrivate = false) {
         publishTabs();
     });
 
-    if (targetUrl !== NEW_TAB_URL) wc.loadURL(targetUrl).catch((error) => console.error("Page loading error:", error));
+    if (targetUrl !== NEW_TAB_URL) {
+        const startLoad = () => { if (!wc.isDestroyed()) wc.loadURL(targetUrl).catch(() => console.error("Page loading error")); };
+        if (Number.isFinite(options.loadDelay) && options.loadDelay > 0) setTimeout(startLoad, options.loadDelay);
+        else startLoad();
+    }
 
     publishTabs();
     return id;
@@ -978,11 +1150,18 @@ function configurePermissionSession(targetSession, isPrivate = false) {
         if (isPrivate) return privatePermissionDecisions.get(`${origin}|${permission}`) || "ask";
         return database.getWebsitePermissions().find(item => item.origin === origin && item.permission === permission)?.decision || "ask";
     };
-    targetSession.setPermissionCheckHandler((_wc, permission, requestingOrigin) => resolve(requestingOrigin, permission) === "granted");
+    targetSession.setPermissionCheckHandler((_wc, permission, requestingOrigin) => {
+        try { return isSafeUrl(requestingOrigin) && new URL(requestingOrigin).origin === requestingOrigin && resolve(requestingOrigin, permission) === "granted"; }
+        catch { return false; }
+    });
     targetSession.setPermissionRequestHandler(async (wc, permission, callback, details) => {
         const requestingUrl = details?.requestingUrl || wc.getURL();
         let origin;
-        try { origin = new URL(requestingUrl).origin; } catch { callback(false); return; }
+        try {
+            const requesting = new URL(requestingUrl);
+            if (!isSafeUrl(requestingUrl)) { callback(false); return; }
+            origin = requesting.origin;
+        } catch { callback(false); return; }
         const decision = resolve(origin, permission);
         if (decision !== "ask") { callback(decision === "granted"); return; }
         if (!SUPPORTED_SITE_PERMISSIONS.has(permission) || !mainWindow || mainWindow.isDestroyed()) { callback(false); return; }
@@ -1023,9 +1202,9 @@ function switchTab(id) {
 }
 
 
-async function closeTab(id) {
+async function closeTab(id, explicitlyClosePinned = false) {
     const tab = tabs.get(id);
-    if (!tab) return;
+    if (!tab || (tab.pinned && !explicitlyClosePinned)) return false;
 
     const activeTabDownloads = [...downloads.values()].filter(item => item.tabId === id && ["progressing", "paused"].includes(item.state));
     if (activeTabDownloads.length && mainWindow && !mainWindow.isDestroyed()) {
@@ -1038,14 +1217,15 @@ async function closeTab(id) {
             cancelId: 0,
             noLink: true
         });
-        if (confirmation.response !== 1) return;
+        if (confirmation.response !== 1) return false;
     }
 
     const wasActive = activeTabId === id;
     const wasPrivate = tab.isPrivate;
     if (!wasPrivate && isSafeUrl(tab.url)) {
-        closedTabs.unshift({ url: tab.url, title: tab.title });
+        closedTabs.unshift({ url: tab.url, title: tab.title, pinned: Boolean(tab.pinned) });
         closedTabs.splice(10);
+        database.updateSettings({ recentlyClosedTabs: closedTabs });
     }
 
     if (wasActive) {
@@ -1078,7 +1258,7 @@ async function closeTab(id) {
 
     if (tabs.size === 0) {
         createTab();
-        return;
+        return true;
     }
 
     if (wasActive) {
@@ -1087,23 +1267,70 @@ async function closeTab(id) {
     } else {
         publishTabs();
     }
+    return true;
+}
+
+async function closeOtherTabs(keepId) {
+    if (!tabs.has(keepId)) return;
+    for (const id of [...tabs.keys()]) {
+        if (id !== keepId && !tabs.get(id)?.pinned) await closeTab(id);
+    }
+}
+
+async function closeTabsToRight(targetId) {
+    const orderedTabs = getTabData();
+    const index = orderedTabs.findIndex(tab => tab.id === targetId);
+    if (index < 0) return;
+    for (const item of orderedTabs.slice(index + 1)) {
+        if (!tabs.get(item.id)?.pinned) await closeTab(item.id);
+    }
+}
+
+function reloadTab(id) {
+    const tab = tabs.get(id);
+    const wc = tab?.view.webContents;
+    if (!wc || wc.isDestroyed()) return false;
+    wc.reload();
+    return true;
+}
+
+function setTabMuted(id, muted) {
+    const tab = tabs.get(id);
+    const wc = tab?.view.webContents;
+    if (!wc || wc.isDestroyed()) return false;
+    wc.setAudioMuted(muted);
+    publishTabs();
+    return true;
 }
 
 
 function createWindow() {
     configurePermissionSession(session.defaultSession, false);
+    const initialTheme = database.getSettings().theme === "light" ? "light" : "dark";
     mainWindow = new BrowserWindow({
         width: 1440,
         height: 900,
         minWidth: 1000,
         minHeight: 650,
         title: "DevFlow Browser",
-        backgroundColor: "#101114",
+        backgroundColor: initialTheme === "light" ? "#f5f7fb" : "#0d1117",
         webPreferences: {
             preload: path.join(__dirname, "preload.cjs"),
+            additionalArguments: [`--devflow-theme=${initialTheme}`],
             contextIsolation: true,
-            nodeIntegration: false
+            nodeIntegration: false,
+            sandbox: true,
+            webSecurity: true,
+            webviewTag: false
         }
+    });
+
+    mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+    mainWindow.webContents.on("will-navigate", (event, url, isMainFrame) => {
+        if (isMainFrame && !isDevFlowAppUrl(url)) event.preventDefault();
+    });
+    mainWindow.webContents.on("will-redirect", (event, url, isMainFrame) => {
+        if (isMainFrame && !isDevFlowAppUrl(url)) event.preventDefault();
     });
 
     createToolsMenuWindow();
@@ -1111,18 +1338,14 @@ function createWindow() {
 
     mainWindow.on("close", () => {
         const settings = database.getSettings();
-
-        if (settings.startupBehavior !== "continue") {
-            return;
-        }
-
-        const openTabs = Array.from(tabs.values())
-            .filter(tab => !tab.isPrivate)
-            .map(tab => tab.url)
-            .filter(url => isSafeUrl(url) || url === NEW_TAB_URL);
-
+        const openTabs = Array.from(tabs.values()).filter(tab => !tab.isPrivate && (isSafeUrl(tab.url) || tab.url === NEW_TAB_URL));
+        const activeIndex = openTabs.findIndex(tab => tab.id === activeTabId);
         database.updateSettings({
-            lastSession: openTabs
+            pinnedTabs: [...new Map(openTabs.filter(tab => tab.pinned && isSafeUrl(tab.url)).map(tab => [tab.url, { url: tab.url, title: tab.title }])).values()],
+            ...(settings.startupBehavior === "continue" ? {
+                lastSession: openTabs.map(tab => ({ url: tab.url, title: tab.title, pinned: Boolean(tab.pinned) })),
+                lastActiveTabIndex: activeIndex
+            } : {})
         });
     });
 
@@ -1160,16 +1383,32 @@ function createWindow() {
 
     const settings = database.getSettings();
 
+    const pinnedTabs = Array.isArray(settings.pinnedTabs) ? settings.pinnedTabs.filter(item => item && isSafeUrl(item.url)).slice(0, 8) : [];
+    const pinnedIdsByUrl = new Map();
+    for (const [index, item] of pinnedTabs.entries()) {
+        if (!pinnedIdsByUrl.has(item.url)) pinnedIdsByUrl.set(item.url, createTab(item.url, false, { pinned: true, loadDelay: index * 220 }));
+    }
+
     if (
         settings.startupBehavior === "continue" &&
         Array.isArray(settings.lastSession) &&
         settings.lastSession.length > 0
     ) {
-        settings.lastSession.forEach(url => {
-            if (isSafeUrl(url) || url === NEW_TAB_URL) {
-                createTab(url);
-            }
-        });
+        const restoredIds = [];
+        const restoredByUrl = new Map();
+        for (const saved of settings.lastSession.slice(0, 15)) {
+            const url = typeof saved === "string" ? saved : saved?.url;
+            if (!(isSafeUrl(url) || url === NEW_TAB_URL)) { restoredIds.push(null); continue; }
+            if (pinnedIdsByUrl.has(url)) { restoredIds.push(pinnedIdsByUrl.get(url)); continue; }
+            if (restoredByUrl.has(url)) { restoredIds.push(restoredByUrl.get(url)); continue; }
+            const id = createTab(url, false, { pinned: Boolean(typeof saved === "object" && saved.pinned), loadDelay: (pinnedTabs.length + restoredIds.length) * 220 });
+            restoredByUrl.set(url, id);
+            restoredIds.push(id);
+        }
+        const lastActive = Number.isInteger(settings.lastActiveTabIndex) ? restoredIds[settings.lastActiveTabIndex] : null;
+        if (lastActive && tabs.has(lastActive)) switchTab(lastActive);
+        else if (restoredIds.some(Boolean)) switchTab([...restoredIds].reverse().find(Boolean));
+        else createTab(NEW_TAB_URL);
     } else if (settings.startupBehavior === "newtab") {
         createTab(NEW_TAB_URL);
     } else {
@@ -1210,34 +1449,76 @@ function decryptAuthConfig(encrypted) {
 
 // Browser IPC
 
-ipcMain.handle("browser:create-tab", (event, url) => {
+secureHandle("browser:create-tab", (event, url) => {
     if (!isTrustedRenderer(event)) return { success: false, error: "Unauthorized request" };
     return createTab(url == null ? NEW_TAB_URL : (isSafeUrl(url) ? url : NEW_TAB_URL));
 });
 
-ipcMain.handle("browser:duplicate-tab", (event, id) => {
+secureHandle("browser:duplicate-tab", (event, id) => {
     if (!isTrustedRenderer(event) || typeof id !== "string") return { success: false, error: "Invalid tab" };
     const tab = tabs.get(id);
     if (!tab) return { success: false, error: "Tab no longer exists" };
     return { success: true, id: createTab(tab.url === NEW_TAB_URL ? NEW_TAB_URL : tab.url, tab.isPrivate) };
 });
 
-ipcMain.handle("browser:reopen-closed-tab", (event) => {
-    if (!isTrustedRenderer(event)) return { success: false, error: "Unauthorized request" };
-    const item = closedTabs.shift();
-    return item ? { success: true, id: createTab(item.url) } : { success: false, error: "No recently closed tab" };
+secureHandle("browser:open-blocked-popup", (event, data) => {
+    if (!isTrustedRenderer(event) || !data || typeof data.tabId !== "string" || typeof data.url !== "string" || data.url.length > 2048 || !isSafeUrl(data.url)) return { success: false, error: "Invalid popup destination" };
+    const source = tabs.get(data.tabId);
+    if (!source) return { success: false, error: "Source tab no longer exists" };
+    return { success: true, id: createTab(data.url, Boolean(source.isPrivate)) };
 });
 
-ipcMain.handle("browser:set-tab-pinned", (event, data) => {
+secureHandle("browser:reopen-closed-tab", (event) => {
+    if (!isTrustedRenderer(event)) return { success: false, error: "Unauthorized request" };
+    const item = closedTabs.shift();
+    database.updateSettings({ recentlyClosedTabs: closedTabs });
+    return item ? { success: true, id: createTab(item.url, false, { pinned: item.pinned }) } : { success: false, error: "No recently closed tab" };
+});
+
+secureHandle("browser:set-tab-pinned", (event, data) => {
     if (!isTrustedRenderer(event) || !data || typeof data.id !== "string" || typeof data.pinned !== "boolean") return { success: false, error: "Invalid pin request" };
     const tab = tabs.get(data.id);
     if (!tab) return { success: false, error: "Tab no longer exists" };
+    if (data.pinned && (tab.isPrivate || !isSafeUrl(tab.url))) return { success: false, error: "Only normal website tabs can be pinned" };
     tab.pinned = data.pinned;
+    const pinnedTabs = [...new Map([...tabs.values()].filter(item => item.pinned && !item.isPrivate && isSafeUrl(item.url)).map(item => [item.url, { url: item.url, title: item.title }])).values()];
+    database.updateSettings({ pinnedTabs });
     publishTabs();
     return { success: true };
 });
 
-ipcMain.handle("browser:search-suggestions", async (event, data) => {
+secureHandle("browser:close-pinned-tab", async (event, id) => {
+    if (!isTrustedRenderer(event) || typeof id !== "string" || !tabs.get(id)?.pinned) return { success: false, error: "Invalid pinned tab" };
+    return { success: await closeTab(id, true) };
+});
+
+secureHandle("browser:close-other-tabs", async (event, id) => {
+    if (!isTrustedRenderer(event) || typeof id !== "string" || !tabs.has(id)) return { success: false, error: "Invalid tab" };
+    await closeOtherTabs(id);
+    return { success: true };
+});
+
+secureHandle("browser:close-tabs-right", async (event, id) => {
+    if (!isTrustedRenderer(event) || typeof id !== "string" || !tabs.has(id)) return { success: false, error: "Invalid tab" };
+    await closeTabsToRight(id);
+    return { success: true };
+});
+
+secureHandle("browser:reload-tab", (event, id) => {
+    if (!isTrustedRenderer(event) || typeof id !== "string") return { success: false, error: "Invalid tab" };
+    return reloadTab(id) ? { success: true } : { success: false, error: "Tab no longer exists" };
+});
+
+secureHandle("browser:toggle-tab-mute", (event, id) => {
+    if (!isTrustedRenderer(event) || typeof id !== "string") return { success: false, error: "Invalid tab" };
+    const tab = tabs.get(id);
+    const wc = tab?.view.webContents;
+    if (!wc || wc.isDestroyed()) return { success: false, error: "Tab no longer exists" };
+    const muted = !wc.isAudioMuted();
+    return { success: setTabMuted(id, muted), muted };
+});
+
+secureHandle("browser:search-suggestions", async (event, data) => {
     if (!isTrustedRenderer(event) || !data || typeof data.query !== "string" || data.query.length > 100 || !["google", "bing", "duckduckgo"].includes(data.engine)) return { success: false, error: "Invalid suggestion request", suggestions: [] };
     const query = data.query.trim();
     if (!query) return { success: true, suggestions: [] };
@@ -1255,14 +1536,14 @@ ipcMain.handle("browser:search-suggestions", async (event, data) => {
     } catch { return { success: false, suggestions: [], error: "Search suggestions are unavailable." }; }
 });
 
-ipcMain.handle("browser:create-private-tab", (_, url) => {
+secureHandle("browser:create-private-tab", (_, url) => {
     return createTab(
         isSafeUrl(url) ? url : "https://www.google.com",
         true
     );
 });
 
-ipcMain.handle("db:add-bookmark", (_, data) => {
+secureHandle("db:add-bookmark", (_, data) => {
     if (
         !data ||
         typeof data.title !== "string" ||
@@ -1281,41 +1562,81 @@ ipcMain.handle("db:add-bookmark", (_, data) => {
     }
 });
 
-ipcMain.handle("db:get-bookmarks", () => database.getBookmarks());
+secureHandle("db:get-bookmarks", () => database.getBookmarks());
 
-ipcMain.handle("db:delete-bookmark", (_, id) => {
+secureHandle("db:delete-bookmark", (_, id) => {
     if (!Number.isSafeInteger(id) || id < 1) return false;
 
     database.deleteBookmark(id);
     return true;
 });
 
-ipcMain.handle("db:get-history", () => database.getHistory());
+secureHandle("db:get-history", () => database.getHistory());
 
-ipcMain.handle("db:clear-history", () => {
+secureHandle("db:clear-history", () => {
     database.clearHistory();
     return true;
 });
 
-ipcMain.handle("browser:switch-tab", (_, id) => {
+secureHandle("browser:clear-data", async (event, data) => {
+    if (!isTrustedRenderer(event) || !data || typeof data !== "object" || Array.isArray(data)) return { success: false, error: "Invalid clear-data request" };
+    const validRanges = new Set(["hour", "day", "week", "4weeks", "all"]);
+    const validTypes = new Set(["history", "downloads", "cookies", "cache", "permissions", "siteData"]);
+    if (!validRanges.has(data.range) || !data.types || typeof data.types !== "object" || Array.isArray(data.types)) return { success: false, error: "Invalid clear-data options" };
+    for (const [key, value] of Object.entries(data.types)) {
+        if (!validTypes.has(key) || typeof value !== "boolean") return { success: false, error: "Invalid clear-data selection" };
+    }
+    if (!Object.values(data.types).some(Boolean)) return { success: false, error: "Select at least one data type" };
+    const durations = { hour: 60 * 60 * 1000, day: 24 * 60 * 60 * 1000, week: 7 * 24 * 60 * 60 * 1000, "4weeks": 28 * 24 * 60 * 60 * 1000, all: Infinity };
+    const cutoff = data.range === "all" ? 0 : Date.now() - durations[data.range];
+    try {
+        if (data.types.history) {
+            if (data.range === "all") database.clearHistory();
+            else database.clearHistoryBefore(cutoff);
+        }
+        if (data.types.downloads) {
+            if (data.range === "all") database.clearDownloads();
+            else database.clearDownloadsBefore(cutoff);
+            for (const [id, item] of downloads) {
+                if (!['progressing', 'paused'].includes(item.state) && item.startedAt < cutoff) downloads.delete(id);
+            }
+            publishDownloads();
+        }
+        if (data.types.permissions) database.clearWebsitePermissions();
+        const storages = [];
+        if (data.types.cookies) storages.push("cookies");
+        if (data.types.siteData) storages.push("localstorage", "indexdb", "serviceworkers", "cachestorage", "filesystem");
+        if (storages.length) await session.defaultSession.clearStorageData({ storages });
+        if (data.types.cache) await session.defaultSession.clearCache();
+        if (data.types.permissions && mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("permissions:updated", database.getWebsitePermissions());
+        return { success: true, limitations: "The selected time range applies to history and download history. Cookies, cache, saved site data, and permission decisions are cleared for all time using Electron session APIs. Private-session data is cleared automatically when its last private tab closes." };
+    } catch (error) {
+        console.error("Clear browsing data error:", error);
+        return { success: false, error: "Could not clear all selected browsing data" };
+    }
+});
+
+secureHandle("browser:switch-tab", (_, id) => {
     switchTab(id);
 });
 
-ipcMain.handle("browser:close-tab", (_, id) => {
-    closeTab(id);
+secureHandle("browser:close-tab", (event, id) => {
+    if (!isTrustedRenderer(event) || typeof id !== "string") return { success: false, error: "Invalid tab" };
+    return closeTab(id);
 });
 
-ipcMain.handle("browser:get-tabs", () => ({
+secureHandle("browser:get-tabs", () => ({
     tabs: getTabData(),
-    activeTabId
+    activeTabId,
+    closedTabCount: closedTabs.length
 }));
 
-ipcMain.handle("permissions:get", (event) => {
+secureHandle("permissions:get", (event) => {
     if (!isTrustedRenderer(event)) return { success: false, error: "Unauthorized request", permissions: [] };
     return { success: true, permissions: database.getWebsitePermissions() };
 });
 
-ipcMain.handle("permissions:set", (event, data) => {
+secureHandle("permissions:set", (event, data) => {
     if (!isTrustedRenderer(event) || !data || typeof data.origin !== "string" || typeof data.permission !== "string" || !SUPPORTED_SITE_PERMISSIONS.has(data.permission) || !["granted", "denied", "ask"].includes(data.decision)) return { success: false, error: "Invalid permission setting" };
     let parsed;
     try { parsed = new URL(data.origin); } catch { return { success: false, error: "Invalid website origin" }; }
@@ -1325,15 +1646,24 @@ ipcMain.handle("permissions:set", (event, data) => {
     return { success: true, permissions: database.getWebsitePermissions() };
 });
 
+secureHandle("permissions:reset-origin", (event, origin) => {
+    if (!isTrustedRenderer(event) || typeof origin !== "string" || origin.length > 300) return { success: false, error: "Invalid website origin" };
+    let parsed;
+    try { parsed = new URL(origin); } catch { return { success: false, error: "Invalid website origin" }; }
+    if (!isSafeUrl(parsed.href) || parsed.origin !== origin) return { success: false, error: "Invalid website origin" };
+    database.removeWebsitePermissions(origin);
+    return { success: true, permissions: database.getWebsitePermissions() };
+});
+
 // Browser Settings IPC
 
-ipcMain.handle("settings:get", (event) => {
+secureHandle("settings:get", (event) => {
     if (!isTrustedRenderer(event)) return null;
 
     return database.getSettings();
 });
 
-ipcMain.handle("settings:update", (event, newSettings) => {
+secureHandle("settings:update", (event, newSettings) => {
     if (!isTrustedRenderer(event)) {
         return { success: false, error: "Unauthorized request" };
     }
@@ -1347,6 +1677,27 @@ ipcMain.handle("settings:update", (event, newSettings) => {
         }
     }
 
+    if (Object.prototype.hasOwnProperty.call(newSettings, "newTabBackground")) {
+        const config = newSettings.newTabBackground;
+        const choices = {
+            animation: ["none", "leaves", "water", "clouds", "snow", "particles", "waves", "stars", "aurora", "rain", "wind"],
+            speed: ["slow", "normal", "fast"],
+            intensity: ["low", "medium", "high"],
+            staticBackground: ["default", "midnight", "dawn"]
+        };
+        const numeric = { opacity: [0.1, 1], blur: [0, 14] };
+        if (!config || typeof config !== "object" || Array.isArray(config)) return { success: false, error: "Invalid New Tab background settings" };
+        for (const [key, value] of Object.entries(config)) {
+            if (key === "enabled" || key === "lowPerformance") {
+                if (typeof value !== "boolean") return { success: false, error: `Invalid New Tab ${key} setting` };
+            } else if (Object.prototype.hasOwnProperty.call(choices, key)) {
+                if (!choices[key].includes(value)) return { success: false, error: `Invalid New Tab ${key} setting` };
+            } else if (Object.prototype.hasOwnProperty.call(numeric, key)) {
+                if (typeof value !== "number" || !Number.isFinite(value) || value < numeric[key][0] || value > numeric[key][1]) return { success: false, error: `Invalid New Tab ${key} setting` };
+            } else return { success: false, error: "Unknown New Tab background setting" };
+        }
+    }
+
     const allowedKeys = [
         "searchEngine",
         "homepage",
@@ -1354,7 +1705,8 @@ ipcMain.handle("settings:update", (event, newSettings) => {
         "theme",
         "downloadLocation",
         "openPopupsInNewTabs",
-        "downloadNotifications"
+        "downloadNotifications",
+        "newTabBackground"
     ];
 
     const safeSettings = {};
@@ -1365,9 +1717,16 @@ ipcMain.handle("settings:update", (event, newSettings) => {
         }
     }
 
+    if (Object.prototype.hasOwnProperty.call(safeSettings, "newTabBackground")) {
+        safeSettings.newTabBackground = { ...(database.getSettings().newTabBackground || {}), ...safeSettings.newTabBackground };
+    }
+
     try {
         database.updateSettings(safeSettings);
 
+        if (Object.prototype.hasOwnProperty.call(safeSettings, "theme") && mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.setBackgroundColor(safeSettings.theme === "light" ? "#f5f7fb" : "#0d1117");
+        }
         if (Object.prototype.hasOwnProperty.call(safeSettings, "theme") && toolsWindow && !toolsWindow.isDestroyed()) {
             toolsWindow.setBackgroundColor(safeSettings.theme === "light" ? "#edf0f5" : "#191b22");
             toolsWindow.webContents.send("tools:theme", safeSettings.theme);
@@ -1380,14 +1739,14 @@ ipcMain.handle("settings:update", (event, newSettings) => {
     }
 });
 
-ipcMain.handle("browser:get-network-requests", (_, tabId) => {
+secureHandle("browser:get-network-requests", (_, tabId) => {
     if (typeof tabId !== "string") return [];
 
     return [...networkRequests.values()]
         .filter(item => item.tabId === tabId);
 });
 
-ipcMain.handle("browser:clear-network-requests", (_, tabId) => {
+secureHandle("browser:clear-network-requests", (_, tabId) => {
     if (typeof tabId !== "string") return false;
 
     for (const [key, item] of networkRequests.entries()) {
@@ -1399,7 +1758,7 @@ ipcMain.handle("browser:clear-network-requests", (_, tabId) => {
     return true;
 });
 
-ipcMain.handle("browser:set-request-blocked", (event, data) => {
+secureHandle("browser:set-request-blocked", (event, data) => {
     if (!isTrustedRenderer(event)) return { success: false, error: "Unauthorized request" };
     if (!data || typeof data.url !== "string" || data.url.length > 4096 || typeof data.blocked !== "boolean" || !isSafeUrl(data.url)) return { success: false, error: "Invalid request blocking rule" };
     if (data.blocked) blockedRequestUrls.add(data.url);
@@ -1407,24 +1766,24 @@ ipcMain.handle("browser:set-request-blocked", (event, data) => {
     return { success: true };
 });
 
-ipcMain.handle("browser:navigate", async (_, url) => {
+secureHandle("browser:navigate", async (_, url) => {
     if (!isSafeUrl(url)) return;
 
     const tab = tabs.get(activeTabId);
     if (tab) await tab.view.webContents.loadURL(url);
 });
 
-ipcMain.handle("browser:back", () => {
+secureHandle("browser:back", () => {
     const wc = tabs.get(activeTabId)?.view.webContents;
     if (wc?.canGoBack()) wc.goBack();
 });
 
-ipcMain.handle("browser:forward", () => {
+secureHandle("browser:forward", () => {
     const wc = tabs.get(activeTabId)?.view.webContents;
     if (wc?.canGoForward()) wc.goForward();
 });
 
-ipcMain.handle("browser:reload", () => {
+secureHandle("browser:reload", () => {
     const tab = tabs.get(activeTabId);
     const wc = tab?.view.webContents;
 
@@ -1444,7 +1803,57 @@ ipcMain.handle("browser:reload", () => {
     wc.reload();
 });
 
-ipcMain.handle("browser:retry", (event) => {
+secureHandle("browser:hard-reload", (event) => {
+    if (!isTrustedRenderer(event)) return { success: false, error: "Unauthorized request" };
+    const tab = tabs.get(activeTabId);
+    const wc = tab?.view.webContents;
+    if (!wc || wc.isDestroyed()) return { success: false, error: "Tab no longer exists" };
+    wc.reloadIgnoringCache();
+    return { success: true };
+});
+
+secureHandle("browser:find-in-page", (event, data) => {
+    if (!isTrustedRenderer(event) || !data || typeof data !== "object" || typeof data.query !== "string" || data.query.length > 500 || !["start", "next", "previous"].includes(data.action)) return { success: false, error: "Invalid find request" };
+    const targetId = typeof data.tabId === "string" ? data.tabId : activeTabId;
+    if (targetId !== activeTabId) return { success: false, error: "Find in Page only works in the active tab" };
+    const tab = tabs.get(targetId);
+    const wc = tab?.view.webContents;
+    if (!wc || wc.isDestroyed() || !isSafeUrl(tab.url)) return { success: false, error: "Find is unavailable for this tab" };
+    if (!data.query.trim()) {
+        wc.stopFindInPage("clearSelection");
+        tab.findRequestId = null;
+        return { success: true, requestId: null };
+    }
+    const result = wc.findInPage(data.query, {
+        forward: data.action !== "previous",
+        findNext: data.action !== "start"
+    });
+    tab.findRequestId = result;
+    return { success: true, requestId: result };
+});
+
+secureHandle("browser:stop-find-in-page", (event, tabId) => {
+    if (!isTrustedRenderer(event) || (tabId != null && typeof tabId !== "string")) return { success: false, error: "Invalid find request" };
+    const tab = tabs.get(tabId || activeTabId);
+    const wc = tab?.view.webContents;
+    if (!wc || wc.isDestroyed()) return { success: false, error: "Tab no longer exists" };
+    wc.stopFindInPage("clearSelection");
+    tab.findRequestId = null;
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("browser:find-result", { tabId: tab.id, activeMatchOrdinal: 0, matches: 0, finalUpdate: true });
+    return { success: true };
+});
+
+secureHandle("browser:stop-loading", (event) => {
+    if (!isTrustedRenderer(event)) return { success: false, error: "Unauthorized request" };
+    const tab = tabs.get(activeTabId);
+    const wc = tab?.view.webContents;
+    if (!wc || wc.isDestroyed() || !wc.isLoading()) return { success: false, error: "The active page is not loading" };
+    wc.stop();
+    if (!wc.isLoading()) { tab.loading = false; publishTabs(); }
+    return { success: true };
+});
+
+secureHandle("browser:retry", (event) => {
     if (!isTrustedRenderer(event)) {
         return { success: false };
     }
@@ -1465,7 +1874,7 @@ ipcMain.handle("browser:retry", (event) => {
 // JAVASCRIPT EXECUTOR
 // ==========================================
 
-ipcMain.handle("browser:execute-js", async (event, code) => {
+secureHandle("browser:execute-js", async (event, code) => {
     if (!mainWindow || event.sender !== mainWindow.webContents) {
         return {
             success: false,
@@ -1527,7 +1936,7 @@ ipcMain.handle("browser:execute-js", async (event, code) => {
 // API COLLECTION IPC HANDLERS
 // ==========================================
 
-ipcMain.handle("api:add-collection", (_, name) => {
+secureHandle("api:add-collection", (_, name) => {
     if (
         typeof name !== "string" ||
         !name.trim() ||
@@ -1551,11 +1960,11 @@ ipcMain.handle("api:add-collection", (_, name) => {
     }
 });
 
-ipcMain.handle("api:get-collections", () => {
+secureHandle("api:get-collections", () => {
     return database.getCollections();
 });
 
-ipcMain.handle("api:delete-collection", (_, id) => {
+secureHandle("api:delete-collection", (_, id) => {
     if (!Number.isSafeInteger(id) || id < 1) {
         return { success: false };
     }
@@ -1572,7 +1981,7 @@ ipcMain.handle("api:delete-collection", (_, id) => {
 // SAVED API REQUEST IPC HANDLERS
 // ==========================================
 
-ipcMain.handle("api:save-request", (_, data) => {
+secureHandle("api:save-request", (_, data) => {
     try {
         if (
             !data ||
@@ -1668,26 +2077,19 @@ ipcMain.handle("api:save-request", (_, data) => {
     }
 });
 
-ipcMain.handle("api:get-saved-requests", (_, collectionId) => {
+secureHandle("api:get-saved-requests", (_, collectionId) => {
     if (!Number.isSafeInteger(collectionId) || collectionId < 1) {
         return [];
     }
 
     try {
         return database.getSavedRequests(collectionId).map(item => {
-            let authConfig = {};
-
-            try {
-                const encrypted = JSON.parse(item.auth_config || '""');
-                authConfig = decryptAuthConfig(encrypted);
-            } catch {
-                authConfig = {};
-            }
-
+            const publicItem = { ...item };
+            delete publicItem.auth_config;
             return {
-                ...item,
+                ...publicItem,
                 headers: JSON.parse(item.headers || "{}"),
-                authConfig
+                authConfig: {}
             };
         });
     } catch (error) {
@@ -1696,7 +2098,32 @@ ipcMain.handle("api:get-saved-requests", (_, collectionId) => {
     }
 });
 
-ipcMain.handle("api:delete-saved-request", (_, id) => {
+secureHandle("api:get-saved-request", (_, id) => {
+    if (!Number.isSafeInteger(id) || id < 1) return { success: false, error: "Invalid request ID" };
+    try {
+        const item = database.getSavedRequest(id);
+        if (!item) return { success: false, error: "Saved request not found" };
+        const encrypted = JSON.parse(item.auth_config || '\"\"');
+        return {
+            success: true,
+            request: {
+                id: item.id,
+                collection_id: item.collection_id,
+                name: item.name,
+                method: item.method,
+                url: item.url,
+                body: item.body,
+                auth_type: item.auth_type,
+                headers: JSON.parse(item.headers || "{}"),
+                authConfig: decryptAuthConfig(encrypted)
+            }
+        };
+    } catch {
+        return { success: false, error: "Could not load saved credentials" };
+    }
+});
+
+secureHandle("api:delete-saved-request", (_, id) => {
     if (!Number.isSafeInteger(id) || id < 1) {
         return { success: false };
     }
@@ -1720,7 +2147,7 @@ const allowedMethods = [
     "HEAD"
 ];
 
-ipcMain.handle("api:send-request", async (_, data) => {
+secureHandle("api:send-request", async (_, data) => {
     if (!data || typeof data !== "object") {
         return { error: "Invalid request data" };
     }
@@ -1775,7 +2202,7 @@ ipcMain.handle("api:send-request", async (_, data) => {
         headers[key] = value;
     }
 
-    if (data.body !== undefined && typeof data.body !== "string") {
+    if (data.body !== undefined && (typeof data.body !== "string" || data.body.length > 1024 * 1024)) {
         return { error: "Request body must be text" };
     }
 
@@ -1843,9 +2270,30 @@ ipcMain.handle("api:send-request", async (_, data) => {
             redirect: "follow"
         });
 
-        const responseText = method === "HEAD"
-            ? ""
-            : await result.text();
+        const responseLimit = 1024 * 1024;
+        const responseChunks = [];
+        let responseBytes = 0;
+        let truncated = false;
+        if (method !== "HEAD" && result.body) {
+            const reader = result.body.getReader();
+            while (responseBytes <= responseLimit) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                const remaining = responseLimit - responseBytes;
+                const accepted = value.byteLength > remaining ? value.subarray(0, remaining) : value;
+                if (accepted.byteLength) responseChunks.push(accepted);
+                responseBytes += accepted.byteLength;
+                if (accepted.byteLength < value.byteLength || responseBytes === responseLimit) {
+                    truncated = true;
+                    await reader.cancel();
+                    break;
+                }
+            }
+        }
+        const joined = new Uint8Array(responseBytes);
+        let offset = 0;
+        for (const chunk of responseChunks) { joined.set(chunk, offset); offset += chunk.byteLength; }
+        const responseText = new TextDecoder().decode(joined);
 
         const duration = Date.now() - startTime;
 
@@ -1853,61 +2301,16 @@ ipcMain.handle("api:send-request", async (_, data) => {
             status: result.status,
             statusText: result.statusText,
             duration,
-            size: new TextEncoder().encode(responseText).length,
+            size: responseBytes,
             headers: Object.fromEntries(result.headers.entries()),
             body: responseText.slice(0, 1024 * 1024),
-            truncated: responseText.length > 1024 * 1024
+            truncated
         };
-        // Handle authentication based on the provided type and configuration.
-        // this is not working properly, need to fix it.
-        const authType = data.authType || "none";
-        const auth = data.authConfig || {};
-
-        if (authType === "bearer") {
-            if (!auth.token || typeof auth.token !== "string") {
-                return { error: "Bearer token is required" };
-            }
-
-            headers.Authorization = `Bearer ${auth.token}`;
-        }
-
-        if (authType === "basic") {
-            if (
-                typeof auth.username !== "string" ||
-                typeof auth.password !== "string"
-            ) {
-                return { error: "Username and password are required" };
-            }
-
-            const credentials = Buffer.from(
-                `${auth.username}:${auth.password}`
-            ).toString("base64");
-
-            headers.Authorization = `Basic ${credentials}`;
-        }
-
-        if (authType === "apikey") {
-            if (
-                typeof auth.key !== "string" ||
-                typeof auth.value !== "string" ||
-                !auth.key.trim() ||
-                /[\r\n]/.test(auth.key + auth.value)
-            ) {
-                return { error: "Valid API key and value are required" };
-            }
-
-            if (auth.location === "query") {
-                parsedUrl.searchParams.set(auth.key, auth.value);
-            } else {
-                headers[auth.key] = auth.value;
-            }
-        }
-
     } catch (error) {
         return {
             error: error.name === "AbortError"
                 ? "Request timed out after 30 seconds"
-                : error.message || "Network request failed"
+                : "Network request failed"
         };
     } finally {
         clearTimeout(timeout);
@@ -1916,7 +2319,7 @@ ipcMain.handle("api:send-request", async (_, data) => {
 
 
 
-ipcMain.on("browser:resize", (_, bounds) => {
+secureOn("browser:resize", (_, bounds) => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
 
     if (
@@ -1940,7 +2343,7 @@ ipcMain.on("browser:resize", (_, bounds) => {
 });
 
 
-ipcMain.on("browser:set-visible", (_, visible) => {
+secureOn("browser:set-visible", (_, visible) => {
     const tab = tabs.get(activeTabId);
 
     if (!tab || !mainWindow || mainWindow.isDestroyed()) return;
@@ -1972,7 +2375,7 @@ ipcMain.on("browser:set-visible", (_, visible) => {
 });
 
 
-ipcMain.handle("browser:responsive-mode", async (event, settings) => {
+secureHandle("browser:responsive-mode", async (event, settings) => {
     if (!isTrustedRenderer(event)) {
         return { success: false, error: "Unauthorized request" };
     }
@@ -2055,7 +2458,7 @@ ipcMain.handle("browser:responsive-mode", async (event, settings) => {
 });
 
 
-ipcMain.handle("browser:responsive-reset", async (event) => {
+secureHandle("browser:responsive-reset", async (event) => {
     if (!isTrustedRenderer(event)) {
         return { success: false, error: "Unauthorized request" };
     }
@@ -2125,7 +2528,7 @@ function getInspectorHistory(tabId) {
     return inspectorHistory.get(tabId);
 }
 
-ipcMain.handle("inspector:mutate-dom", async (event, data) => {
+secureHandle("inspector:mutate-dom", async (event, data) => {
     if (!isTrustedRenderer(event)) return { success: false, error: "Unauthorized request" };
     const { operation, selector, tagName, name, value } = data || {};
     if (typeof operation !== "string" || !["add", "duplicate", "delete", "text", "attribute", "remove-attribute", "add-class", "remove-class", "reset"].includes(operation) || (selector !== undefined && (typeof selector !== "string" || selector.length > 2000)) || (tagName !== undefined && (typeof tagName !== "string" || !/^[a-z][a-z0-9-]{0,40}$/i.test(tagName))) || (name !== undefined && (typeof name !== "string" || name.length > 100)) || (value !== undefined && (typeof value !== "string" || value.length > 20000))) return { success: false, error: "Invalid DOM operation" };
@@ -2156,7 +2559,7 @@ ipcMain.handle("inspector:mutate-dom", async (event, data) => {
     } catch (error) { return { success: false, error: error.message || "DOM operation failed" }; }
 });
 
-ipcMain.handle("inspector:history", async (event, direction) => {
+secureHandle("inspector:history", async (event, direction) => {
     if (!isTrustedRenderer(event)) return { success: false, error: "Unauthorized request" };
     if (!["undo", "redo"].includes(direction)) return { success: false, error: "Invalid history action" };
     const tab = tabs.get(activeTabId);
@@ -2171,7 +2574,7 @@ ipcMain.handle("inspector:history", async (event, direction) => {
     } catch (error) { from.push(item); return { success: false, error: error.message }; }
 });
 
-ipcMain.handle("inspector:start", async (event) => {
+secureHandle("inspector:start", async (event) => {
     if (!isTrustedRenderer(event)) {
         return { success: false, error: "Unauthorized request" };
     }
@@ -2368,7 +2771,7 @@ ipcMain.handle("inspector:start", async (event) => {
     }
 });
 
-ipcMain.handle("inspector:stop", async (event) => {
+secureHandle("inspector:stop", async (event) => {
     if (!isTrustedRenderer(event)) {
         return { success: false, error: "Unauthorized request" };
     }
@@ -2396,7 +2799,7 @@ ipcMain.handle("inspector:stop", async (event) => {
 
 // ELEMENT INSPECTOR - DOM TREE
 
-ipcMain.handle("inspector:get-dom-tree", async (event) => {
+secureHandle("inspector:get-dom-tree", async (event) => {
     if (!isTrustedRenderer(event)) {
         return { success: false, error: "Unauthorized request" };
     }
@@ -2510,7 +2913,7 @@ ipcMain.handle("inspector:get-dom-tree", async (event) => {
 
 // SELECT ELEMENT FROM DOM TREE
 
-ipcMain.handle("inspector:select-dom-element", async (event, selector) => {
+secureHandle("inspector:select-dom-element", async (event, selector) => {
     if (!isTrustedRenderer(event)) {
         return { success: false, error: "Unauthorized request" };
     }
@@ -2614,7 +3017,7 @@ ipcMain.handle("inspector:select-dom-element", async (event, selector) => {
 
 // ELEMENT INSPECTOR - LIVE CSS UPDATE
 
-ipcMain.handle("inspector:update-element-style", async (event, data) => {
+secureHandle("inspector:update-element-style", async (event, data) => {
     if (!isTrustedRenderer(event)) {
         return { success: false, error: "Unauthorized request" };
     }
@@ -2735,7 +3138,7 @@ ipcMain.handle("inspector:update-element-style", async (event, data) => {
 
 // ELEMENT INSPECTOR - EDIT HTML
 
-ipcMain.handle("inspector:update-element-html", async (event, data) => {
+secureHandle("inspector:update-element-html", async (event, data) => {
     if (!isTrustedRenderer(event)) {
         return { success: false, error: "Unauthorized request" };
     }
@@ -2830,7 +3233,7 @@ ipcMain.handle("inspector:update-element-html", async (event, data) => {
 
 // ELEMENT INSPECTOR - DELETE ELEMENT
 
-ipcMain.handle("inspector:delete-element", async (event, selector) => {
+secureHandle("inspector:delete-element", async (event, selector) => {
     if (!isTrustedRenderer(event)) {
         return { success: false, error: "Unauthorized request" };
     }
@@ -2910,7 +3313,7 @@ ipcMain.handle("inspector:delete-element", async (event, selector) => {
 
 // ELEMENT INSPECTOR - BOX MODEL
 
-ipcMain.handle("inspector:get-box-model", async (event, selector) => {
+secureHandle("inspector:get-box-model", async (event, selector) => {
     if (!isTrustedRenderer(event)) {
         return { success: false, error: "Unauthorized request" };
     }
@@ -2997,7 +3400,7 @@ ipcMain.handle("inspector:get-box-model", async (event, selector) => {
 
 // ELEMENT INSPECTOR - DOM HIGHLIGHT
 
-ipcMain.handle("inspector:highlight-element", async (event, selector) => {
+secureHandle("inspector:highlight-element", async (event, selector) => {
     if (!isTrustedRenderer(event)) {
         return { success: false, error: "Unauthorized request" };
     }
@@ -3091,7 +3494,7 @@ ipcMain.handle("inspector:highlight-element", async (event, selector) => {
 });
 
 
-ipcMain.on("tools:open-menu", (event, point) => {
+secureOn("tools:open-menu", (event, point) => {
     if (!isTrustedRenderer(event) || !mainWindow || mainWindow.isDestroyed()) return;
 
     if (!toolsWindow || toolsWindow.isDestroyed()) createToolsMenuWindow();
@@ -3114,7 +3517,7 @@ ipcMain.on("tools:open-menu", (event, point) => {
     }
 });
 
-ipcMain.on("tools:select", (event, toolId) => {
+secureOn("tools:select", (event, toolId) => {
     if (!toolsWindow || event.sender !== toolsWindow.webContents) return;
 
     const validTools = [
@@ -3142,18 +3545,18 @@ ipcMain.on("tools:select", (event, toolId) => {
     hideToolsMenu();
 });
 
-ipcMain.handle("tools:get-theme", (event) => {
+secureHandle("tools:get-theme", (event) => {
     if (!toolsWindow || event.sender !== toolsWindow.webContents) return "dark";
     return database.getSettings().theme || "dark";
 });
 
-ipcMain.on("tools:set-active", (event, toolId) => {
+secureOn("tools:set-active", (event, toolId) => {
     if (!isTrustedRenderer(event) || typeof toolId !== "string") return;
     activeTool = toolId;
     if (toolsWindow && !toolsWindow.isDestroyed()) toolsWindow.webContents.send("tools:active", activeTool);
 });
 
-ipcMain.on("tools:close-menu", (event) => {
+secureOn("tools:close-menu", (event) => {
     if (toolsWindow && event.sender === toolsWindow.webContents) {
         hideToolsMenu();
     }
@@ -3210,10 +3613,12 @@ function hideToolsMenu() {
 function isTrustedRenderer(event) {
     return !!mainWindow &&
         !mainWindow.isDestroyed() &&
-        event.sender === mainWindow.webContents;
+        event.sender === mainWindow.webContents &&
+        event.senderFrame === event.sender.mainFrame &&
+        isDevFlowAppUrl(event.senderFrame.url);
 }
 
-ipcMain.handle("downloads:get-all", (event) => {
+secureHandle("downloads:get-all", (event) => {
     if (!isTrustedRenderer(event)) return [];
 
     const savedDownloads = database.getDownloads();
@@ -3231,7 +3636,7 @@ ipcMain.handle("downloads:get-all", (event) => {
     ].sort((a, b) => b.startedAt - a.startedAt);
 });
 
-ipcMain.handle("downloads:control", (event, data) => {
+secureHandle("downloads:control", (event, data) => {
     if (!isTrustedRenderer(event)) {
         return { success: false, error: "Unauthorized request" };
     }
@@ -3268,7 +3673,7 @@ ipcMain.handle("downloads:control", (event, data) => {
 });
 
 
-ipcMain.handle("downloads:remove", (event, id) => {
+secureHandle("downloads:remove", (event, id) => {
     if (!isTrustedRenderer(event)) {
         return { success: false, error: "Unauthorized request" };
     }
@@ -3298,7 +3703,7 @@ ipcMain.handle("downloads:remove", (event, id) => {
 });
 
 
-ipcMain.handle("downloads:clear-history", (event) => {
+secureHandle("downloads:clear-history", (event) => {
     if (!isTrustedRenderer(event)) {
         return {
             success: false,
@@ -3348,7 +3753,7 @@ ipcMain.handle("downloads:clear-history", (event) => {
 
 
 
-ipcMain.handle("downloads:open-file", async (event, id) => {
+secureHandle("downloads:open-file", async (event, id) => {
     if (!isTrustedRenderer(event)) {
         return { success: false, error: "Unauthorized request" };
     }
@@ -3368,7 +3773,7 @@ ipcMain.handle("downloads:open-file", async (event, id) => {
 
     const filePath = download.filePath;
 
-    if (!filePath || !require("fs").existsSync(filePath)) {
+    if (!filePath || !isWithinDirectory(app.getPath("downloads"), filePath) || !require("fs").existsSync(filePath)) {
         return {
             success: false,
             error: "Downloaded file does not exist"
@@ -3383,7 +3788,7 @@ ipcMain.handle("downloads:open-file", async (event, id) => {
 });
 
 
-ipcMain.handle("downloads:show-folder", (event, id) => {
+secureHandle("downloads:show-folder", (event, id) => {
     if (!isTrustedRenderer(event)) {
         return { success: false, error: "Unauthorized request" };
     }
@@ -3403,7 +3808,7 @@ ipcMain.handle("downloads:show-folder", (event, id) => {
 
     const filePath = download.filePath;
 
-    if (!filePath || !require("fs").existsSync(filePath)) {
+    if (!filePath || !isWithinDirectory(app.getPath("downloads"), filePath) || !require("fs").existsSync(filePath)) {
         return {
             success: false,
             error: "Downloaded file does not exist"

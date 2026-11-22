@@ -222,7 +222,13 @@ function ApiTester() {
   };
 
   // Load saved request
-  const loadRequest = (item) => {
+  const loadRequest = async (item) => {
+    const loaded = await window.browserAPI.getSavedRequest(item.id);
+    if (!loaded?.success) {
+      setError(loaded?.error || "Unable to load saved request");
+      return;
+    }
+    item = loaded.request;
     setMethod(item.method);
     setUrl(item.url);
 
