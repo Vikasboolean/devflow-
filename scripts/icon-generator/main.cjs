@@ -30,14 +30,14 @@ function makeIco(images) {
 
 app.whenReady().then(async () => {
   const root = path.resolve(__dirname, "../..");
-  const svg = fs.readFileSync(path.join(root, "public", "favicon.svg"), "base64");
+  const png = fs.readFileSync(path.join(root, "src", "assets", "Neon Gradient Fox Emblem.png"), "base64");
   const window = new BrowserWindow({
     show: false,
     width: 256,
     height: 256,
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true }
   });
-  const html = `<html><body><img id="logo" src="data:image/svg+xml;base64,${svg}"></body></html>`;
+  const html = `<html><body><img id="logo" src="data:image/png;base64,${png}"></body></html>`;
   await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
 
   const images = [];

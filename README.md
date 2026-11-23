@@ -27,7 +27,14 @@ The project uses electron-builder and is configured for a Windows x64 NSIS insta
 npm run dist:win
 ```
 
-The installer configuration expects the approved DevFlow Windows icon at `build/devflow.ico`. The installer cannot be generated until that icon is supplied and the security release gate is cleared. No code-signing certificate is configured.
+The Windows app and installer icon is generated from `src/assets/Neon Gradient Fox Emblem.png`:
+
+```powershell
+npm run generate:icon:win
+npm run dist:win
+```
+
+The generated icon is written to `build/devflow.ico`. No code-signing certificate is configured.
 
 ## User data
 
