@@ -1,7 +1,9 @@
 {
-  "name": "browser-pro",
+  "name": "devflow",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
+  "productName": "DevFlow",
+  "description": "Developer-Focused Desktop Browser",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,13 +11,15 @@
     "electron": "electron .",
     "start": "concurrently \"npm run dev\" \"wait-on http://localhost:5173 && electron .\"",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "test:security": "node tests/ipc-payload.test.cjs && node tests/url-policy.test.cjs && node tests/download-policy.test.cjs && node tests/database-recovery.test.cjs",
+    "test:startup-recovery": "node tests/startup-recovery-smoke.cjs",
+    "test:phase1": "node tests/phase1-runtime.cjs",
+    "test:packaged": "node tests/packaged-smoke.cjs",
+    "preview": "vite preview",
+    "generate:icon:win": "electron scripts/icon-generator",
+    "dist:win": "npm run build && electron-builder --win nsis --x64"
   },
-  "dependencies": {
-    "@electron/remote": "^2.1.4",
-    "react": "^19.3.1",
-    "react-dom": "^19.3.1"
-  },
+  "dependencies": {},
   "main": "electron/main.cjs",
   "devDependencies": {
     "@types/react": "^19.3.0",
@@ -25,7 +29,45 @@
     "electron": "^45.2.1",
     "electron-builder": "^26.18.0",
     "oxlint": "^1.89.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
     "vite": "^8.3.5",
     "wait-on": "^9.5.1"
+  },
+  "build": {
+    "appId": "com.devflow.browser",
+    "productName": "DevFlow",
+    "executableName": "DevFlow",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json",
+      "!**/*.map"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/devflow.ico",
+      "artifactName": "DevFlow-Setup-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "DevFlow",
+      "runAfterFinish": true
+    }
   }
 }

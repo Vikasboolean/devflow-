@@ -76,6 +76,15 @@ function readData() {
     };
   } catch (error) {
     if (error.code === "ENOENT") return emptyData();
+    if (error instanceof SyntaxError) {
+      // Preserve the unreadable file for diagnosis, then let the app start with defaults.
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      let backupPath = `${dbPath}.corrupt-${stamp}`;
+      let suffix = 1;
+      while (fs.existsSync(backupPath)) backupPath = `${dbPath}.corrupt-${stamp}-${suffix++}`;
+      fs.renameSync(dbPath, backupPath);
+      return emptyData();
+    }
     throw error;
   }
 }
@@ -245,6 +254,7 @@ module.exports = {
       receivedBytes: download.receivedBytes || 0,
       totalBytes: download.totalBytes || 0,
       filePath: download.filePath || "",
+      downloadDirectory: download.downloadDirectory || "",
       startedAt: download.startedAt || Date.now(),
       completedAt: download.completedAt || Date.now(),
       error: download.error || null

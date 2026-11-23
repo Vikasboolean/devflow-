@@ -1,8 +1,16 @@
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
+import { copyFileSync, mkdirSync } from 'node:fs'
+import { resolve } from 'node:path'
 
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => ({
+  base: './',
+  server: {
+    watch: {
+      ignored: ['**/release/**']
+    }
+  },
   plugins: [
     react(),
     {
@@ -24,7 +32,14 @@ export default defineConfig(({ mode }) => ({
           "form-action 'self'"
         ].join('; ')
         return [{ tag: 'meta', attrs: { 'http-equiv': 'Content-Security-Policy', content: policy }, injectTo: 'head-prepend' }]
+      },
+      closeBundle() {
+        if (mode !== 'production') return
+        const output = resolve('dist')
+        mkdirSync(output, { recursive: true })
+        copyFileSync(resolve('public/favicon.svg'), resolve(output, 'favicon.svg'))
       }
     }
   ],
+  build: { copyPublicDir: false },
 }))

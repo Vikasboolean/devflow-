@@ -25,8 +25,7 @@ contextBridge.exposeInMainWorld("browserAPI", {
     return () => ipcRenderer.removeListener("tools:selected", listener);
   },
 
-  createTab: (url) =>
-    ipcRenderer.invoke("browser:create-tab", url),
+  createTab: (url) => ipcRenderer.invoke("browser:create-tab", url ?? null),
 
   duplicateTab: (id) => ipcRenderer.invoke("browser:duplicate-tab", id),
   openBlockedPopup: (data) => ipcRenderer.invoke("browser:open-blocked-popup", data),
@@ -184,6 +183,8 @@ contextBridge.exposeInMainWorld("browserAPI", {
   // Download Manager
   getDownloads: () =>
     ipcRenderer.invoke("downloads:get-all"),
+
+  chooseDownloadLocation: () => ipcRenderer.invoke("downloads:choose-location"),
 
   controlDownload: (id, action) =>
     ipcRenderer.invoke("downloads:control", { id, action }),

@@ -359,8 +359,20 @@ function App() {
   };
 
 
-  const addTab = () => {
-    window.browserAPI.createTab();
+  const addTab = async () => {
+    closeNewTabCustomize();
+    setPanel("");
+    setContextTab(null);
+    try {
+      const tabId = await window.browserAPI.createTab();
+      if (typeof tabId !== "string") {
+        showToast(tabId?.error || "Could not create a new tab", "error");
+      }
+      return tabId;
+    } catch (error) {
+      showToast(error?.message || "Could not create a new tab", "error");
+      return null;
+    }
   };
 
   const selectTab = (id) => {

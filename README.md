@@ -1,16 +1,37 @@
-# React + Vite
+# DevFlow
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+Developer-Focused Desktop Browser built with Electron, React, and Vite.
 
-Currently, two official plugins are available:
+## Development
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+```powershell
+npm install
+npm start
+```
 
-## React Compiler
+## Production build
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+```powershell
+npm run build
+```
 
-## Expanding the Oxlint configuration
+The Vite output is written to `dist/` with relative asset paths for Electron's `file://` production window. `public/console-test.html` is intentionally excluded from production output.
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and Oxlint's TypeScript related rules in your project.
+Run the bounded IPC and URL policy tests with `npm run test:security`. After packaging creates `release/win-unpacked/DevFlow.exe`, `npm run test:packaged` runs production smoke checks against a controlled local page and a temporary user-data folder.
+
+## Windows installer
+
+The project uses electron-builder and is configured for a Windows x64 NSIS installer:
+
+```powershell
+npm run dist:win
+```
+
+The installer configuration expects the approved DevFlow Windows icon at `build/devflow.ico`. The installer cannot be generated until that icon is supplied and the security release gate is cleared. No code-signing certificate is configured.
+
+## User data
+
+Settings, bookmarks, history, API collections, downloads metadata, and encrypted API credentials are stored under Electron `userData`. The packaged application keeps the existing `browser-pro` user-data folder to preserve settings created by earlier builds. Downloads are saved to the selected folder or the operating-system Downloads folder.
+
+See [SECURITY_CHECKLIST.md](SECURITY_CHECKLIST.md) for the release verification steps.
+Current release blockers are tracked in [RELEASE_GATE.md](RELEASE_GATE.md).

@@ -1,4 +1,3 @@
-const database = require("./database.cjs");
 const {
     app,
     BrowserWindow,
@@ -13,8 +12,22 @@ const {
 } = require("electron");
 
 const path = require("path");
+const fs = require("fs");
 const { randomUUID } = require("crypto");
 const { fileURLToPath } = require("url");
+const { isSafeUrl, shouldBlockWebsiteNavigation } = require("./url-policy.cjs");
+const { safeDownloadFilename } = require("./download-policy.cjs");
+
+// Keep the existing browser-pro userData directory stable across the product rename.
+const appDataDirectory = process.platform === "win32" && process.env.APPDATA
+    ? process.env.APPDATA
+    : app.getPath("appData");
+app.setPath("userData", path.join(appDataDirectory, "browser-pro"));
+app.setName("DevFlow");
+if (process.platform === "win32") app.setAppUserModelId("com.devflow.browser");
+
+const database = require("./database.cjs");
+const { isValidIpcArguments } = require("./ipc-payload.cjs");
 
 let mainWindow;
 let toolsWindow = null;
@@ -38,35 +51,30 @@ const blockedRequestUrls = new Set();
 const MAX_NETWORK_REQUESTS = 500;
 // Download Manager
 const downloads = new Map();
+const configuredDownloadSessions = new WeakSet();
+const reservedDownloadPaths = new Set();
 const MAX_DOWNLOAD_HISTORY = 200;
 const NEW_TAB_URL = "devflow://newtab";
 const closedTabs = (Array.isArray(database.getSettings().recentlyClosedTabs) ? database.getSettings().recentlyClosedTabs : [])
     .filter(item => item && isSafeUrl(item.url) && !item.isPrivate)
     .slice(0, 10);
 const privatePermissionDecisions = new Map();
+const approvedDownloadLocations = new Set();
 const SUPPORTED_SITE_PERMISSIONS = new Set(["media", "geolocation", "notifications", "clipboard-read", "clipboard-sanitized-write", "popups", "downloads"]);
-
-function isSafeUrl(value) {
-    try {
-        if (typeof value !== "string" || value.length === 0 || value.length > 8192 || value !== value.trim()) return false;
-        const parsed = new URL(value);
-        return ["http:", "https:"].includes(parsed.protocol) && !parsed.username && !parsed.password;
-    } catch {
-        return false;
-    }
-}
-
-function safeDownloadFilename(value) {
-    const raw = typeof value === "string" ? path.basename(value).replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").replace(/[ .]+$/g, "") : "";
-    if (!raw || raw === "." || raw === "..") return "download";
-    return raw.slice(0, 180);
-}
 
 function isWithinDirectory(directory, candidate) {
     const root = path.resolve(directory);
     const resolved = path.resolve(candidate);
     const relative = path.relative(root, resolved);
     return relative !== "" && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+function getDownloadDirectory() {
+    const configured = database.getSettings().downloadLocation;
+    if (typeof configured === "string" && configured && path.isAbsolute(configured)) {
+        try { if (fs.statSync(configured).isDirectory()) return path.resolve(configured); } catch { /* Use the OS default when the saved folder is unavailable. */ }
+    }
+    return app.getPath("downloads");
 }
 
 const toolsOnlyChannels = new Set(["tools:select", "tools:close-menu", "tools:get-theme"]);
@@ -85,6 +93,7 @@ function secureHandle(channel, handler) {
     ipcMain.handle(channel, (event, ...args) => {
         const trusted = toolsOnlyChannels.has(channel) ? isTrustedToolsRenderer(event) : isTrustedRenderer(event);
         if (!trusted) return { success: false, error: "Unauthorized request" };
+        if (!isValidIpcArguments(args)) return { success: false, error: "Invalid IPC payload" };
         return handler(event, ...args);
     });
 }
@@ -92,6 +101,7 @@ function secureOn(channel, handler) {
     ipcMain.on(channel, (event, ...args) => {
         const trusted = toolsOnlyChannels.has(channel) ? isTrustedToolsRenderer(event) : isTrustedRenderer(event);
         if (!trusted) return;
+        if (!isValidIpcArguments(args)) return;
         handler(event, ...args);
     });
 }
@@ -605,6 +615,8 @@ function getDownloadSnapshot(download) {
         paused: download.paused || false,
         canResume: download.canResume || false,
         filePath,
+        downloadDirectory: download.downloadDirectory || app.getPath("downloads"),
+        isPrivate: Boolean(download.isPrivate),
         startedAt: download.startedAt,
         completedAt: download.completedAt ?? null,
         error: download.error || null
@@ -614,17 +626,20 @@ function getDownloadSnapshot(download) {
 function publishDownloads() {
     if (!mainWindow || mainWindow.isDestroyed()) return;
 
+    const privateVisible = Boolean(tabs.get(activeTabId)?.isPrivate);
     const items = [...downloads.values()]
+        .filter(download => !download.isPrivate || privateVisible)
         .sort((a, b) => b.startedAt - a.startedAt)
         .map(getDownloadSnapshot);
 
     mainWindow.webContents.send("downloads:updated", items);
 }
 
-function setupDownloadManager() {
-    const downloadSession = session.defaultSession;
+function setupDownloadManager(downloadSession = session.defaultSession, isPrivate = false) {
+    if (configuredDownloadSessions.has(downloadSession)) return;
+    configuredDownloadSessions.add(downloadSession);
 
-    downloadSession.setDownloadPath(app.getPath("downloads"));
+    downloadSession.setDownloadPath(getDownloadDirectory());
 
     downloadSession.on("will-download", (event, item, webContents) => {
 
@@ -632,13 +647,28 @@ function setupDownloadManager() {
 
         const sourceUrl = webContents?.getURL() || "";
         const sourceOrigin = isSafeUrl(sourceUrl) ? new URL(sourceUrl).origin : null;
-        const downloadDecision = sourceOrigin && database.getWebsitePermissions().find(entry => entry.origin === sourceOrigin && entry.permission === "downloads")?.decision;
+        const downloadDecision = sourceOrigin && (isPrivate
+            ? privatePermissionDecisions.get(`${sourceOrigin}|downloads`)
+            : database.getWebsitePermissions().find(entry => entry.origin === sourceOrigin && entry.permission === "downloads")?.decision);
         if (downloadDecision === "denied") {
             event.preventDefault();
             if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("browser:popup-blocked", { tabId: getTabIdFromWebContents(webContents?.id), origin: sourceOrigin, kind: "download" });
             return;
         }
-        if (downloadDecision !== "granted" && sourceOrigin) {
+        if (isPrivate && downloadDecision !== "granted" && sourceOrigin) {
+            if (!mainWindow || mainWindow.isDestroyed()) { event.preventDefault(); return; }
+            item.pause();
+            dialog.showMessageBox(mainWindow, {
+                type: "question",
+                title: "Allow private download?",
+                message: `${sourceOrigin} wants to download a file in this private session.`,
+                detail: "This choice will not be saved. The downloaded file will remain on disk after the private session closes.",
+                buttons: ["Block", "Allow once"],
+                defaultId: 0,
+                cancelId: 0,
+                noLink: true
+            }).then(result => result.response === 1 ? item.resume() : item.cancel()).catch(() => item.cancel());
+        } else if (!isPrivate && downloadDecision !== "granted" && sourceOrigin) {
             if (!mainWindow || mainWindow.isDestroyed()) { event.preventDefault(); return; }
             item.pause();
             dialog.showMessageBox(mainWindow, {
@@ -663,7 +693,7 @@ function setupDownloadManager() {
         }
 
         // Automatically save downloads without showing Save As dialog
-        const downloadsFolder = app.getPath("downloads");
+        const downloadsFolder = getDownloadDirectory();
 
         const originalName = safeDownloadFilename(item.getFilename());
         const parsedName = path.parse(originalName);
@@ -671,7 +701,7 @@ function setupDownloadManager() {
         let savePath = path.join(downloadsFolder, originalName);
         let counter = 1;
 
-        while (require("fs").existsSync(savePath)) {
+        while (require("fs").existsSync(savePath) || reservedDownloadPaths.has(path.resolve(savePath))) {
             savePath = path.join(
                 downloadsFolder,
                 `${parsedName.name} (${counter})${parsedName.ext}`
@@ -680,6 +710,7 @@ function setupDownloadManager() {
         }
 
         item.setSavePath(savePath);
+        reservedDownloadPaths.add(path.resolve(savePath));
 
 
         const id = randomUUID();
@@ -703,6 +734,8 @@ function setupDownloadManager() {
             paused: false,
             canResume: false,
             filePath: "",
+            downloadDirectory: downloadsFolder,
+            isPrivate,
             startedAt: now,
             completedAt: null,
             error: null
@@ -710,7 +743,7 @@ function setupDownloadManager() {
 
         downloads.set(id, download);
 
-        database.saveDownload(getDownloadSnapshot(download));
+        if (!isPrivate) database.saveDownload(getDownloadSnapshot(download));
 
         publishDownloads();
 
@@ -746,6 +779,7 @@ function setupDownloadManager() {
 
 
         item.once("done", (_, state) => {
+            reservedDownloadPaths.delete(path.resolve(savePath));
             download.state = state;
             download.receivedBytes = item.getReceivedBytes();
             download.totalBytes = item.getTotalBytes();
@@ -758,8 +792,10 @@ function setupDownloadManager() {
                 download.error = "Download interrupted";
             }
 
-            database.saveDownload(getDownloadSnapshot(download));
+            if (!isPrivate) database.saveDownload(getDownloadSnapshot(download));
             publishDownloads();
+
+            if (isPrivate) return;
 
             // Native desktop notification
             const { Notification, shell } = require("electron");
@@ -785,7 +821,7 @@ function setupDownloadManager() {
                     });
 
                     notification.on("click", () => {
-                        if (state === "completed" && download.filePath && isWithinDirectory(app.getPath("downloads"), download.filePath)) {
+                        if (state === "completed" && download.filePath && isWithinDirectory(download.downloadDirectory || app.getPath("downloads"), download.filePath)) {
                             shell.openPath(download.filePath);
                         }
                     });
@@ -999,7 +1035,11 @@ function createTab(url = null, isPrivate = false, options = {}) {
     };
 
     tabs.set(id, tab);
-    if (isPrivate) configurePermissionSession(session.fromPartition("incognito"), true);
+    if (isPrivate) {
+        const privateSession = session.fromPartition("incognito");
+        configurePermissionSession(privateSession, true);
+        setupDownloadManager(privateSession, true);
+    }
     attachResponsePreview(tab.view.webContents, id);
 
     if (activeTabId) {
@@ -1016,11 +1056,11 @@ function createTab(url = null, isPrivate = false, options = {}) {
     const wc = view.webContents;
     forwardBrowserShortcuts(wc);
 
-    wc.on("will-navigate", (event, destination, isMainFrame) => {
-        if (isMainFrame && !isSafeUrl(destination)) event.preventDefault();
+    wc.on("will-navigate", (event, destination, _isInPlace, legacyIsMainFrame) => {
+        if (shouldBlockWebsiteNavigation(event.url || destination, event.isMainFrame ?? legacyIsMainFrame)) event.preventDefault();
     });
-    wc.on("will-redirect", (event, destination, isMainFrame) => {
-        if (isMainFrame && !isSafeUrl(destination)) event.preventDefault();
+    wc.on("will-redirect", (event, destination, _isInPlace, legacyIsMainFrame) => {
+        if (shouldBlockWebsiteNavigation(event.url || destination, event.isMainFrame ?? legacyIsMainFrame)) event.preventDefault();
     });
 
     // Capture webpage console messages
@@ -1199,6 +1239,7 @@ function switchTab(id) {
     updateActiveBounds();
 
     publishTabs();
+    publishDownloads();
 }
 
 
@@ -1243,6 +1284,13 @@ async function closeTab(id, explicitlyClosePinned = false) {
 
         if (!hasPrivateTabs) {
             privatePermissionDecisions.clear();
+            for (const [downloadId, download] of downloads.entries()) {
+                if (!download.isPrivate) continue;
+                if (["progressing", "paused"].includes(download.state)) {
+                    try { download.item?.cancel(); } catch { /* The private download may already have stopped. */ }
+                }
+                downloads.delete(downloadId);
+            }
             try {
                 const privateSession = session.fromPartition("incognito");
 
@@ -1253,6 +1301,7 @@ async function closeTab(id, explicitlyClosePinned = false) {
             } catch (error) {
                 console.error("Incognito cleanup error:", error);
             }
+            publishDownloads();
         }
     }
 
@@ -1266,6 +1315,7 @@ async function closeTab(id, explicitlyClosePinned = false) {
         switchTab(nextId);
     } else {
         publishTabs();
+    publishDownloads();
     }
     return true;
 }
@@ -1312,7 +1362,7 @@ function createWindow() {
         height: 900,
         minWidth: 1000,
         minHeight: 650,
-        title: "DevFlow Browser",
+        title: "DevFlow",
         backgroundColor: initialTheme === "light" ? "#f5f7fb" : "#0d1117",
         webPreferences: {
             preload: path.join(__dirname, "preload.cjs"),
@@ -1326,11 +1376,11 @@ function createWindow() {
     });
 
     mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-    mainWindow.webContents.on("will-navigate", (event, url, isMainFrame) => {
-        if (isMainFrame && !isDevFlowAppUrl(url)) event.preventDefault();
+    mainWindow.webContents.on("will-navigate", (event, url, _isInPlace, legacyIsMainFrame) => {
+        if ((event.isMainFrame ?? legacyIsMainFrame) && !isDevFlowAppUrl(event.url || url)) event.preventDefault();
     });
-    mainWindow.webContents.on("will-redirect", (event, url, isMainFrame) => {
-        if (isMainFrame && !isDevFlowAppUrl(url)) event.preventDefault();
+    mainWindow.webContents.on("will-redirect", (event, url, _isInPlace, legacyIsMainFrame) => {
+        if ((event.isMainFrame ?? legacyIsMainFrame) && !isDevFlowAppUrl(event.url || url)) event.preventDefault();
     });
 
     createToolsMenuWindow();
@@ -1717,12 +1767,34 @@ secureHandle("settings:update", (event, newSettings) => {
         }
     }
 
+    if (Object.prototype.hasOwnProperty.call(safeSettings, "downloadLocation")) {
+        const location = safeSettings.downloadLocation;
+        if (typeof location !== "string" || location.length > 2048) return { success: false, error: "Invalid download location" };
+        if (location) {
+            try {
+                if (!path.isAbsolute(location) || !fs.statSync(location).isDirectory()) return { success: false, error: "Choose an existing folder for downloads" };
+                const normalized = path.resolve(location);
+                const persisted = database.getSettings().downloadLocation;
+                if (normalized !== (persisted ? path.resolve(persisted) : "") && !approvedDownloadLocations.has(normalized)) {
+                    return { success: false, error: "Choose the download folder using the folder picker" };
+                }
+                safeSettings.downloadLocation = normalized;
+            } catch { return { success: false, error: "Choose an existing folder for downloads" }; }
+        } else safeSettings.downloadLocation = "";
+    }
+
     if (Object.prototype.hasOwnProperty.call(safeSettings, "newTabBackground")) {
         safeSettings.newTabBackground = { ...(database.getSettings().newTabBackground || {}), ...safeSettings.newTabBackground };
     }
 
     try {
         database.updateSettings(safeSettings);
+
+        if (Object.prototype.hasOwnProperty.call(safeSettings, "downloadLocation")) {
+            approvedDownloadLocations.delete(safeSettings.downloadLocation);
+            session.defaultSession.setDownloadPath(getDownloadDirectory());
+            session.fromPartition("incognito").setDownloadPath(getDownloadDirectory());
+        }
 
         if (Object.prototype.hasOwnProperty.call(safeSettings, "theme") && mainWindow && !mainWindow.isDestroyed()) {
             mainWindow.setBackgroundColor(safeSettings.theme === "light" ? "#f5f7fb" : "#0d1117");
@@ -3623,7 +3695,9 @@ secureHandle("downloads:get-all", (event) => {
 
     const savedDownloads = database.getDownloads();
 
+    const privateVisible = Boolean(tabs.get(activeTabId)?.isPrivate);
     const activeDownloads = [...downloads.values()]
+        .filter(download => !download.isPrivate || privateVisible)
         .map(getDownloadSnapshot);
 
     const activeIds = new Set(
@@ -3634,6 +3708,18 @@ secureHandle("downloads:get-all", (event) => {
         ...activeDownloads,
         ...savedDownloads.filter(item => !activeIds.has(item.id))
     ].sort((a, b) => b.startedAt - a.startedAt);
+});
+
+secureHandle("downloads:choose-location", async () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return { success: false, error: "Window is unavailable" };
+    const result = await dialog.showOpenDialog(mainWindow, { title: "Choose download folder", properties: ["openDirectory", "createDirectory"] });
+    return result.canceled || !result.filePaths[0]
+        ? { success: false, canceled: true }
+        : (() => {
+            const selectedPath = path.resolve(result.filePaths[0]);
+            approvedDownloadLocations.add(selectedPath);
+            return { success: true, path: selectedPath };
+        })();
 });
 
 secureHandle("downloads:control", (event, data) => {
@@ -3647,7 +3733,7 @@ secureHandle("downloads:control", (event, data) => {
 
     const download = downloads.get(data.id);
 
-    if (!download) {
+    if (!canAccessDownload(download)) {
         return { success: false, error: "Download not found" };
     }
 
@@ -3683,6 +3769,7 @@ secureHandle("downloads:remove", (event, id) => {
     }
 
     const liveDownload = downloads.get(id);
+    if (liveDownload && !canAccessDownload(liveDownload)) return { success: false, error: "Download not found" };
 
     // Do not remove an active download.
     if (
@@ -3714,7 +3801,7 @@ secureHandle("downloads:clear-history", (event) => {
     try {
         // Keep downloads that are still active or paused.
         const activeDownloads = [...downloads.values()].filter(
-            item => ["progressing", "paused"].includes(item.state)
+            item => !item.isPrivate && ["progressing", "paused"].includes(item.state)
         );
 
         // Remove all saved download history.
@@ -3728,7 +3815,7 @@ secureHandle("downloads:clear-history", (event) => {
         }
 
         // Preserve active downloads in JSON storage.
-        activeDownloads.forEach(download => {
+        activeDownloads.filter(download => !download.isPrivate).forEach(download => {
             database.saveDownload(getDownloadSnapshot(download));
         });
 
@@ -3764,7 +3851,7 @@ secureHandle("downloads:open-file", async (event, id) => {
 
     const download = getDownloadRecord(id);
 
-    if (!download || download.state !== "completed") {
+    if (!canAccessDownload(download) || download.state !== "completed") {
         return {
             success: false,
             error: "Download is not complete"
@@ -3773,7 +3860,7 @@ secureHandle("downloads:open-file", async (event, id) => {
 
     const filePath = download.filePath;
 
-    if (!filePath || !isWithinDirectory(app.getPath("downloads"), filePath) || !require("fs").existsSync(filePath)) {
+    if (!filePath || !isWithinDirectory(download.downloadDirectory || app.getPath("downloads"), filePath) || !fs.existsSync(filePath)) {
         return {
             success: false,
             error: "Downloaded file does not exist"
@@ -3799,7 +3886,7 @@ secureHandle("downloads:show-folder", (event, id) => {
 
     const download = getDownloadRecord(id);
 
-    if (!download) {
+    if (!canAccessDownload(download)) {
         return {
             success: false,
             error: "Download not found"
@@ -3808,7 +3895,7 @@ secureHandle("downloads:show-folder", (event, id) => {
 
     const filePath = download.filePath;
 
-    if (!filePath || !isWithinDirectory(app.getPath("downloads"), filePath) || !require("fs").existsSync(filePath)) {
+    if (!filePath || !isWithinDirectory(download.downloadDirectory || app.getPath("downloads"), filePath) || !fs.existsSync(filePath)) {
         return {
             success: false,
             error: "Downloaded file does not exist"
@@ -3842,6 +3929,10 @@ function getDownloadRecord(id) {
 
     // Look up downloads saved in the JSON database.
     return database.getDownloads().find(item => item.id === id) || null;
+}
+
+function canAccessDownload(download) {
+    return Boolean(download) && (!download.isPrivate || Boolean(tabs.get(activeTabId)?.isPrivate));
 }
 
 

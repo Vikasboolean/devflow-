@@ -44,6 +44,11 @@ function BrowserSettings({ onSearchEngineChange, onThemeChange }) {
     setMessage("");
   };
 
+  const chooseDownloadLocation = async () => {
+    const result = await window.browserAPI.chooseDownloadLocation();
+    if (result?.success) updateField("downloadLocation", result.path);
+  };
+
   const saveSettings = async () => {
     setSaving(true);
     setMessage("");
@@ -165,10 +170,14 @@ function BrowserSettings({ onSearchEngineChange, onThemeChange }) {
           <label>Download Location</label>
           <input
             value={settings.downloadLocation}
-            onChange={(e) => updateField("downloadLocation", e.target.value)}
+            readOnly
             placeholder="Default Downloads folder"
           />
-          <small>Folder selection will be added in the next step.</small>
+          <div className="setting-actions">
+            <button type="button" onClick={chooseDownloadLocation}>Choose folder</button>
+            <button type="button" onClick={() => updateField("downloadLocation", "")}>Use default</button>
+          </div>
+          <small>Save settings to use the selected folder for new downloads.</small>
         </div>
         <div className="setting-item setting-checkbox">
           <label><input type="checkbox" checked={settings.downloadNotifications !== false} onChange={e => updateField("downloadNotifications", e.target.checked)} /> Show download completion notifications</label>
